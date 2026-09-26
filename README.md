@@ -4,8 +4,8 @@ Minecraft AI Building Builder: describe a building, and an AI designs it and bui
 in your Minecraft world while you watch. It's built for Minecraft **Java Edition** in **Creative** and
 targets anything from a cottage up to a castle.
 
-> **Status: milestone 2 (building library).** mcbuild can connect to a server, build hand-made designs
-> from its building library with animation, and undo them. The AI designer comes in milestone 3.
+> **Status: milestone 3 (AI builds from chat).** Type `!build a cozy oak cottage` in Minecraft chat, and
+> Claude designs the building and mcbuild builds it in front of you.
 
 ## Quick start (Mac)
 
@@ -16,6 +16,8 @@ mcbuild setup-server --flat --accept-eula   # downloads the official server and 
 mcbuild demo                                # builds a hut in front of you
 mcbuild gallery                             # builds a row of sample buildings
 mcbuild undo                                # removes the last build
+mcbuild set-key                             # save your Anthropic API key
+mcbuild listen                              # then type in Minecraft chat: !build a wizard tower
 ```
 
 Full step-by-step instructions are in **[docs/setup-mac.md](docs/setup-mac.md)**.
@@ -38,9 +40,17 @@ prompt ──► Claude writes a build script ──► run it ──► voxel m
   (doors, torches, lanterns and so on) go last.
 - **Undo:** before building, the area is copied with `/clone` to a backup slot far away in the same
   world. `mcbuild undo` copies it back.
-- **AI (coming):** Claude writes a short Python script against a library of building primitives
-  (walls, towers, roofs, crenellations...). This handles castle-scale builds with loops and symmetry
-  in one pass, instead of placing blocks one at a time.
+- **AI designer:** Claude writes a short Python script against the building library (walls,
+  towers, roofs, battlements...), which handles castle-scale builds with loops and symmetry in one
+  pass. The script runs in a separate, locked-down process: no imports, no files, a time limit.
+  Every block is checked against the list of valid blocks exported from your own server, and any
+  problems go back to Claude to fix, up to 3 attempts.
+- **Chat commands:** `mcbuild listen` watches the server log for `!build <description>`,
+  `!designs`, `!rebuild <number or name>`, `!undo` and `!help`, and replies in chat.
+- **Saved designs:** every design is saved automatically as a numbered script in
+  `.mcbuild/designs/`. `!rebuild 3` (or `mcbuild script 3`) builds it again with no AI and no API
+  cost. `mcbuild designs` lists them. The model defaults to Claude Opus 5.5 (`MCBUILD_MODEL`
+  overrides it).
 
 ## Building library
 
@@ -64,8 +74,7 @@ turns them, including every stair, door and pane, so the front faces you.
 
 1. ✅ **Plumbing:** server setup, RCON, animated placement, undo
 2. ✅ **Building library:** shapes, roofs, battlements, doors, windows, arches, stairs, towers, rotation
-3. **AI builds from in-game chat:** type `!build a cozy oak cottage` in Minecraft. Claude writes the
-   build script, and mcbuild validates it, feeds errors back, then builds in front of you
+3. ✅ **AI builds from in-game chat:** `!build ...` in Minecraft, with checks and automatic fixes
 4. **Castle scale:** gatehouses, curtain walls, ground leveling, faster placement with `/fill`
 5. **Extras:** image-based self-review, style presets, glass-outline preview
 

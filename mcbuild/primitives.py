@@ -48,6 +48,7 @@ def clear(b: Build, p1: Pos, p2: Pos) -> None:
 
 
 def pillar(b: Build, base: Pos, height: int, block: str) -> None:
+    """A column `height` blocks tall standing on `base` (its bottom block)."""
     x, y, z = base
     for dy in range(height):
         b.set(x, y + dy, z, block)
@@ -308,6 +309,7 @@ def stairs_run(b: Build, start: Pos, direction: str, steps: int, material: str, 
 
 
 def lantern(b: Build, pos: Pos, hanging: bool = False) -> None:
+    """A lantern standing on the block below, or hanging from the block above."""
     b.set(*pos, f"lantern[hanging={'true' if hanging else 'false'}]")
 
 
