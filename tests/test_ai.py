@@ -257,3 +257,32 @@ def test_cli_rebuilds_saved_design_by_number(tmp_path, monkeypatch):
     finally:
         srv.close()
     assert any("stone_bricks" in blk for blk in game.world.values())
+
+
+def test_block_report_generated_outside_server_folder(tmp_path, monkeypatch):
+    """The data generator writes logs/latest.log in its working folder; it must not be the
+    server's, or `mcbuild listen` stops seeing chat."""
+    import json
+    import subprocess
+    from mcbuild import blocks
+
+    server = tmp_path / "server"
+    (server / "logs").mkdir(parents=True)
+    (server / "server.jar").write_text("jar")
+    (server / "logs" / "latest.log").write_text("server log\n")
+    calls = []
+
+    def fake_run(cmd, cwd, **kwargs):
+        calls.append(cwd)
+        os.makedirs(os.path.join(cwd, "generated", "reports"))
+        os.makedirs(os.path.join(cwd, "logs"))
+        open(os.path.join(cwd, "logs", "latest.log"), "w").write("generator log\n")
+        json.dump({"minecraft:stone": {}}, open(os.path.join(cwd, "generated", "reports", "blocks.json"), "w"))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(blocks.subprocess, "run", fake_run)
+    monkeypatch.setattr(blocks, "find_java", lambda d: "java")
+    catalog = blocks.ensure_catalog(str(server), log=lambda m: None)
+    assert catalog.check("minecraft:stone") is None
+    assert calls and os.path.abspath(calls[0]) != os.path.abspath(server)
+    assert (server / "logs" / "latest.log").read_text() == "server log\n"
