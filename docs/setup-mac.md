@@ -84,6 +84,8 @@ Useful options:
 | `mcbuild demo --rate 50` | Build more slowly (blocks per second; `0` = as fast as possible) |
 | `mcbuild demo --distance 8` | Leave more room between you and the build |
 | `mcbuild demo --at 100 64 100` | Build at fixed coordinates |
+| `mcbuild gallery` | Build a row of sample buildings: cottage, brick house, towers, gate wall, stairs |
+| `mcbuild gallery --sample wizard-tower` | Build just one of them |
 | `mcbuild history` | List builds that can still be undone |
 
 ## Troubleshooting

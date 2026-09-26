@@ -8,9 +8,11 @@ import sys
 from typing import List, Optional
 
 from .demo import demo_hut
+from .gallery import SAMPLES, gallery, sample
 from .executor import BuildAborted, place_build, undo_last
 from .history import History
-from .placement import OPPOSITE, offset_in_front, yaw_to_direction
+from .model import Build
+from .placement import face_toward_player, offset_in_front, yaw_to_direction
 from .rcon import RconClient, RconError
 from .sequence import build_order
 from .server import CommandError, MinecraftServer
@@ -42,11 +44,11 @@ def cmd_ping(args) -> None:
         print(f"Players online: {', '.join(players) if players else '(none)'}")
 
 
-def cmd_demo(args) -> None:
+def _place_in_front(args, design: Build) -> None:
+    """Place a north-fronted design in front of the player (or at --at), front facing them."""
     if args.dry_run:
-        build = demo_hut(args.door or "north")
-        order = build_order(build)
-        print(f"{build.name}: {len(build)} blocks, bounds {build.bounds()}")
+        order = build_order(design)
+        print(f"{design.name}: {len(design)} blocks, bounds {design.bounds()}")
         for pos, block in order[: args.dry_run]:
             print("setblock {} {} {} {}".format(*pos, block))
         return
@@ -60,12 +62,19 @@ def cmd_demo(args) -> None:
             origin = server.player_position(player)
             facing = args.facing or yaw_to_direction(server.player_yaw(player))
             print(f"{player} is at {tuple(round(v, 1) for v in origin)}, facing {facing}")
-        # Door faces back toward the player.
-        build = demo_hut(args.door or OPPOSITE[facing])
+        build = face_toward_player(design, facing)
         build = build.translated(*offset_in_front(build, origin, facing, args.distance))
         history = History(os.path.join(STATE_DIR, "history.json"))
         entry = place_build(server, build, history, rate=args.rate, backup=not args.no_backup)
         print(f"Build #{entry.id} placed at {tuple(entry.min)}..{tuple(entry.max)}")
+
+
+def cmd_demo(args) -> None:
+    _place_in_front(args, demo_hut("north"))
+
+
+def cmd_gallery(args) -> None:
+    _place_in_front(args, sample(args.sample) if args.sample else gallery())
 
 
 def cmd_undo(args) -> None:
@@ -112,18 +121,27 @@ def build_parser() -> argparse.ArgumentParser:
     add_connection(p)
     p.set_defaults(func=cmd_ping)
 
+    def add_placement(p):
+        add_connection(p)
+        p.add_argument("--player", help="Player to build in front of (default: the only player online)")
+        p.add_argument("--at", nargs=3, type=int, metavar=("X", "Y", "Z"), help="Build here instead of near a player")
+        p.add_argument("--facing", choices=["north", "south", "east", "west"],
+                       help="Direction you're looking (default: read from the game)")
+        p.add_argument("--distance", type=int, default=3, help="Blocks between you and the build")
+        p.add_argument("--rate", type=float, default=150, help="Blocks per second (0 = as fast as possible)")
+        p.add_argument("--no-backup", action="store_true", help="Skip the undo backup")
+        p.add_argument("--dry-run", type=int, nargs="?", const=20, metavar="N",
+                       help="Don't connect; print the first N commands")
+
     p = sub.add_parser("demo", help="Build a test hut in front of you")
-    add_connection(p)
-    p.add_argument("--player", help="Player to build in front of (default: the only player online)")
-    p.add_argument("--at", nargs=3, type=int, metavar=("X", "Y", "Z"), help="Build here instead of near a player")
-    p.add_argument("--facing", choices=["north", "south", "east", "west"], help="Override the build direction")
-    p.add_argument("--door", choices=["north", "south", "east", "west"], help="Which wall gets the door")
-    p.add_argument("--distance", type=int, default=3, help="Blocks between you and the build")
-    p.add_argument("--rate", type=float, default=150, help="Blocks per second (0 = as fast as possible)")
-    p.add_argument("--no-backup", action="store_true", help="Skip the undo backup")
-    p.add_argument("--dry-run", type=int, nargs="?", const=20, metavar="N",
-                   help="Don't connect; print the first N commands")
+    add_placement(p)
     p.set_defaults(func=cmd_demo)
+
+    names = ", ".join(n.replace(" ", "-") for n, _, _ in SAMPLES)
+    p = sub.add_parser("gallery", help="Build a row of sample buildings from the building library")
+    add_placement(p)
+    p.add_argument("--sample", help=f"Build just one sample: {names}")
+    p.set_defaults(func=cmd_gallery)
 
     p = sub.add_parser("undo", help="Revert the most recent build")
     add_connection(p)

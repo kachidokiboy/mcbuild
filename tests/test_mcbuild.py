@@ -217,3 +217,18 @@ def test_merge_properties_preserves_other_lines(tmp_path):
     text = open(path).read()
     assert "#comment" in text and "motd=hello" in text
     assert "enable-rcon=true" in text and "level-type=minecraft\\:normal" in text and "rcon.port=1" in text
+
+
+def test_cli_gallery_sample_faces_player(tmp_path, monkeypatch):
+    game = FakeMinecraft(players={"Alex": ((0.5, 64.0, 0.5), (-90.0, 0.0))})  # facing east
+    srv = FakeRconServer(game, password="pw")
+    monkeypatch.chdir(tmp_path)
+    try:
+        conn = ["--port", str(srv.port), "--password", "pw"]
+        assert main(["gallery", "--sample", "cottage", "--rate", "0", *conn]) == 0
+        doors = [(p, blk) for p, blk in game.world.items() if "spruce_door" in blk]
+        assert doors and all(p[0] > 0 for p, _ in doors)  # built to the east
+        assert all("facing=east" in blk for _, blk in doors)  # entered walking east, away from player
+        assert main(["undo", *conn]) == 0
+    finally:
+        srv.close()
