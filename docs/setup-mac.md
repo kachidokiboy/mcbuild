@@ -25,8 +25,12 @@ git clone https://github.com/kachidokiboy/mcbuild.git
 cd mcbuild
 python3 -m venv .venv
 source .venv/bin/activate        # run this again in each new Terminal window
+pip install --upgrade pip        # the pip bundled with macOS's Python is too old
 pip install -e .
 ```
+
+> Until the work is merged into `main`, switch to the development branch right after `cd mcbuild`:
+> `git checkout claude/lucid-hamilton-fsypzb`
 
 ## 3. Create the server
 
