@@ -57,6 +57,16 @@ Wait for `Done (...)! For help, type "help"`. Leave this window open. Type `stop
 
 Launch Minecraft (Java Edition), then choose **Multiplayer → Direct Connection → `localhost`**.
 
+The first time, if it says you're **not white-listed**, add yourself in the server window
+(the one running `start.sh`), using your Minecraft username:
+
+```
+whitelist add YourMinecraftName
+op YourMinecraftName
+```
+
+`op` is optional. It lets you use commands like `/gamemode` in game.
+
 ## 6. Build
 
 Back in the first Terminal window (with the `.venv` activated):
@@ -78,6 +88,7 @@ Useful options:
 
 ## Troubleshooting
 
+- **"You are not white-listed on this server"**: see step 5.
 - **`Could not connect to RCON`**: the server isn't running or hasn't finished starting.
 - **`RCON password was rejected`**: `server/server.properties` was changed while the server was running. Restart the server.
 - **"Outdated server" / "Outdated client" when joining**: the game and server versions differ. Re-run
