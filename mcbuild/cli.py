@@ -3,22 +3,26 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import os
 import sys
 from typing import List, Optional
 
+from .blocks import ensure_catalog
+from .config import STATE_DIR, anthropic_client, save_api_key
 from .demo import demo_hut
+from .designer import DesignError, design
+from .executor import BuildAborted, undo_last
 from .gallery import SAMPLES, gallery, sample
-from .executor import BuildAborted, place_build, undo_last
 from .history import History
+from .listen import HELP, follow, parse_chat, parse_command
 from .model import Build
-from .placement import face_toward_player, offset_in_front, yaw_to_direction
+from .pipeline import PlaceOptions, ai_build, place_in_front, save_design
 from .rcon import RconClient, RconError
+from .sandbox import ScriptError, run_script_isolated
 from .sequence import build_order
 from .server import CommandError, MinecraftServer
 from .serversetup import read_properties, setup_server
-
-STATE_DIR = ".mcbuild"
 
 
 def _connect(args) -> RconClient:
@@ -36,56 +40,114 @@ def _connect(args) -> RconClient:
     return client
 
 
-def cmd_ping(args) -> None:
-    with _connect(args) as rcon:
-        server = MinecraftServer(rcon)
-        players = server.players()
-        print("Connected to RCON.")
-        print(f"Players online: {', '.join(players) if players else '(none)'}")
+def _history() -> History:
+    return History(os.path.join(STATE_DIR, "history.json"))
 
 
-def _place_in_front(args, design: Build) -> None:
-    """Place a north-fronted design in front of the player (or at --at), front facing them."""
+def _options(args) -> PlaceOptions:
+    return PlaceOptions(player=args.player, at=tuple(args.at) if args.at else None, facing=args.facing,
+                        distance=args.distance, rate=args.rate, backup=not args.no_backup)
+
+
+def _place(args, design_build: Build) -> None:
     if args.dry_run:
-        order = build_order(design)
-        print(f"{design.name}: {len(design)} blocks, bounds {design.bounds()}")
+        order = build_order(design_build)
+        print(f"{design_build.name}: {len(design_build)} blocks, bounds {design_build.bounds()}")
         for pos, block in order[: args.dry_run]:
             print("setblock {} {} {} {}".format(*pos, block))
         return
-
     with _connect(args) as rcon:
-        server = MinecraftServer(rcon)
-        if args.at:
-            origin, facing = tuple(args.at), args.facing or "south"
-        else:
-            player = server.resolve_player(args.player)
-            origin = server.player_position(player)
-            facing = args.facing or yaw_to_direction(server.player_yaw(player))
-            print(f"{player} is at {tuple(round(v, 1) for v in origin)}, facing {facing}")
-        build = face_toward_player(design, facing)
-        build = build.translated(*offset_in_front(build, origin, facing, args.distance))
-        history = History(os.path.join(STATE_DIR, "history.json"))
-        entry = place_build(server, build, history, rate=args.rate, backup=not args.no_backup)
-        print(f"Build #{entry.id} placed at {tuple(entry.min)}..{tuple(entry.max)}")
+        entry = place_in_front(MinecraftServer(rcon), design_build, _history(), _options(args))
+    print(f"Build #{entry.id} placed at {tuple(entry.min)}..{tuple(entry.max)}")
+
+
+def cmd_ping(args) -> None:
+    with _connect(args) as rcon:
+        players = MinecraftServer(rcon).players()
+    print("Connected to RCON.")
+    print(f"Players online: {', '.join(players) if players else '(none)'}")
 
 
 def cmd_demo(args) -> None:
-    _place_in_front(args, demo_hut("north"))
+    _place(args, demo_hut("north"))
 
 
 def cmd_gallery(args) -> None:
-    _place_in_front(args, sample(args.sample) if args.sample else gallery())
+    _place(args, sample(args.sample) if args.sample else gallery())
+
+
+def cmd_build(args) -> None:
+    request = " ".join(args.request)
+    client = anthropic_client()
+    catalog = ensure_catalog(args.server_dir)
+    if args.dry_run:
+        d = design(request, client, catalog)
+        path = save_design(request, d)
+        print(f"Design '{d.build.name}' ({len(d.build)} blocks, bounds {d.build.bounds()}) saved to {path}")
+        print(f"Build it later with: mcbuild script {path}")
+        return
+    entry = ai_build(request, lambda: _connect(args), client, catalog, _history(), _options(args))
+    print(f"Build #{entry.id} placed at {tuple(entry.min)}..{tuple(entry.max)}")
+
+
+def cmd_script(args) -> None:
+    with open(args.path) as f:
+        source = f.read()
+    build = run_script_isolated(source)
+    problems = []
+    catalog = ensure_catalog(args.server_dir)
+    if catalog:
+        from .blocks import check_blocks
+        problems = check_blocks([blk for _, blk in build], catalog)
+    if problems:
+        raise ScriptError("Invalid blocks:\n  " + "\n  ".join(problems))
+    _place(args, build)
+
+
+def cmd_listen(args) -> None:
+    client = anthropic_client()
+    catalog = ensure_catalog(args.server_dir)
+    history = _history()
+    log_path = os.path.join(args.server_dir, "logs", "latest.log")
+    connect = lambda: _connect(args)  # noqa: E731
+    with connect() as rcon:
+        MinecraftServer(rcon).tell("mcbuild is listening. " + HELP)
+    print(f"Listening for !build commands in Minecraft chat (watching {log_path}). Press Ctrl+C to stop.")
+    for line in follow(log_path):
+        chat = parse_chat(line)
+        command = chat and parse_command(chat[1])
+        if not command:
+            continue
+        player, (name, rest) = chat[0], command
+        print(f"<{player}> !{name} {rest}")
+        try:
+            if name == "build" and rest:
+                opts = PlaceOptions(player=player, distance=args.distance, rate=args.rate, backup=not args.no_backup)
+                ai_build(rest, connect, client, catalog, history, opts)
+            elif name == "undo":
+                with connect() as rcon:
+                    entry = undo_last(MinecraftServer(rcon), history)
+                print(f"Undid build #{entry.id} '{entry.name}'")
+            else:
+                with connect() as rcon:
+                    MinecraftServer(rcon).tell(HELP, player)
+        except (RconError, CommandError, BuildAborted, DesignError, RuntimeError, ValueError) as e:
+            print(f"Error: {e}", file=sys.stderr)
+            try:
+                with connect() as rcon:
+                    MinecraftServer(rcon).tell(f"Error: {e}", player)
+            except RconError:
+                pass
 
 
 def cmd_undo(args) -> None:
-    history = History(os.path.join(STATE_DIR, "history.json"))
     with _connect(args) as rcon:
-        entry = undo_last(MinecraftServer(rcon), history)
+        entry = undo_last(MinecraftServer(rcon), _history())
     print(f"Undid build #{entry.id} '{entry.name}'")
 
 
 def cmd_history(args) -> None:
-    history = History(os.path.join(STATE_DIR, "history.json"))
+    history = _history()
     if not history.entries:
         print("No builds yet.")
     for e in history.entries:
@@ -98,6 +160,13 @@ def cmd_setup_server(args) -> None:
                  jar=args.jar, memory=args.memory)
 
 
+def cmd_set_key(args) -> None:
+    key = getpass.getpass("Paste your Anthropic API key (it won't be shown), then press Return: ").strip()
+    if not key.startswith("sk-"):
+        raise ValueError("That doesn't look like an API key (they start with sk-). Nothing was saved.")
+    print(f"Saved to {save_api_key(key)} (only readable by you; not committed to git).")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mcbuild", description="AI building builder for Minecraft")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -108,6 +177,18 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--password", help="RCON password (default: from server.properties)")
         p.add_argument("--server-dir", default="server", help="Server folder to read settings from")
 
+    def add_placement(p, rate=150):
+        add_connection(p)
+        p.add_argument("--player", help="Player to build in front of (default: the only player online)")
+        p.add_argument("--at", nargs=3, type=int, metavar=("X", "Y", "Z"), help="Build here instead of near a player")
+        p.add_argument("--facing", choices=["north", "south", "east", "west"],
+                       help="Direction you're looking (default: read from the game)")
+        p.add_argument("--distance", type=int, default=3, help="Blocks between you and the build")
+        p.add_argument("--rate", type=float, default=rate, help="Blocks per second (0 = as fast as possible)")
+        p.add_argument("--no-backup", action="store_true", help="Skip the undo backup")
+        p.add_argument("--dry-run", type=int, nargs="?", const=20, metavar="N",
+                       help="Don't connect; print the first N commands")
+
     p = sub.add_parser("setup-server", help="Download and configure a local Minecraft server")
     p.add_argument("--dir", default="server")
     p.add_argument("--version", default="latest", help="Minecraft version, e.g. 1.21.8 (default: latest release)")
@@ -117,21 +198,29 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--memory", default="4G", help="Max server memory (default 4G)")
     p.set_defaults(func=cmd_setup_server)
 
+    p = sub.add_parser("set-key", help="Save your Anthropic API key for AI builds")
+    p.set_defaults(func=cmd_set_key)
+
     p = sub.add_parser("ping", help="Check the RCON connection and list players")
     add_connection(p)
     p.set_defaults(func=cmd_ping)
 
-    def add_placement(p):
-        add_connection(p)
-        p.add_argument("--player", help="Player to build in front of (default: the only player online)")
-        p.add_argument("--at", nargs=3, type=int, metavar=("X", "Y", "Z"), help="Build here instead of near a player")
-        p.add_argument("--facing", choices=["north", "south", "east", "west"],
-                       help="Direction you're looking (default: read from the game)")
-        p.add_argument("--distance", type=int, default=3, help="Blocks between you and the build")
-        p.add_argument("--rate", type=float, default=150, help="Blocks per second (0 = as fast as possible)")
-        p.add_argument("--no-backup", action="store_true", help="Skip the undo backup")
-        p.add_argument("--dry-run", type=int, nargs="?", const=20, metavar="N",
-                       help="Don't connect; print the first N commands")
+    p = sub.add_parser("listen", help="Take !build requests from Minecraft chat")
+    add_connection(p)
+    p.add_argument("--distance", type=int, default=3, help="Blocks between the player and the build")
+    p.add_argument("--rate", type=float, default=300, help="Blocks per second")
+    p.add_argument("--no-backup", action="store_true", help="Skip undo backups")
+    p.set_defaults(func=cmd_listen)
+
+    p = sub.add_parser("build", help='Design a building with AI and build it, e.g. mcbuild build "a stone tower"')
+    add_placement(p, rate=300)
+    p.add_argument("request", nargs="+", help="What to build")
+    p.set_defaults(func=cmd_build)
+
+    p = sub.add_parser("script", help="Build a saved design script (from .mcbuild/designs) without the AI")
+    add_placement(p, rate=300)
+    p.add_argument("path")
+    p.set_defaults(func=cmd_script)
 
     p = sub.add_parser("demo", help="Build a test hut in front of you")
     add_placement(p)
@@ -157,9 +246,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         args.func(args)
     except KeyboardInterrupt:
-        print("\nInterrupted. Run `mcbuild undo` to revert a partial build.", file=sys.stderr)
+        print("\nStopped. Run `mcbuild undo` to revert a partial build.", file=sys.stderr)
         return 130
-    except (RconError, CommandError, BuildAborted, RuntimeError, ValueError) as e:
+    except (RconError, CommandError, BuildAborted, DesignError, ScriptError, RuntimeError, ValueError,
+            OSError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
     return 0

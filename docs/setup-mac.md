@@ -88,9 +88,47 @@ Useful options:
 | `mcbuild gallery --sample wizard-tower` | Build just one of them |
 | `mcbuild history` | List builds that can still be undone |
 
+## 7. AI builds from Minecraft chat
+
+1. Get an API key: sign in at [console.anthropic.com](https://console.anthropic.com), add a payment
+   method or credits under **Billing**, then create a key under **API Keys**.
+2. Update mcbuild and save the key (in the `(.venv)` window):
+
+   ```sh
+   git pull
+   pip install -e .          # installs the new anthropic package
+   mcbuild set-key           # paste the key; it's hidden as you paste and stays on your Mac
+   ```
+
+3. Start listening:
+
+   ```sh
+   mcbuild listen
+   ```
+
+   The first time, it spends about 30 seconds exporting the list of valid blocks from your server.
+   Leave this window open while you play. Press Ctrl+C to stop.
+
+4. In Minecraft, open chat (**T**), face where you want the building, and type:
+
+   ```
+   !build a cozy oak cottage with a stone chimney
+   ```
+
+   Designing takes a minute or two. You'll see progress messages in chat, then the building rises
+   in front of you. `!undo` removes the last build, and `!help` lists the commands.
+
+Each design costs a little API usage, typically well under $1; bigger builds and fixes cost more.
+You can also build from the terminal with `mcbuild build "a stone watchtower"`. Every design is saved
+in `.mcbuild/designs/`, and `mcbuild script .mcbuild/designs/001-...py` builds one again for free.
+
 ## Troubleshooting
 
 - **"You are not white-listed on this server"**: see step 5.
+- **`mcbuild: command not found`**: run `source .venv/bin/activate` in that window first.
+- **"the Anthropic API key was rejected"**: run `mcbuild set-key` again with a fresh key.
+- **Nothing happens when you type `!build`**: make sure `mcbuild listen` is running and says
+  "Listening", and that the message starts with `!build`.
 - **`Could not connect to RCON`**: the server isn't running or hasn't finished starting.
 - **`RCON password was rejected`**: `server/server.properties` was changed while the server was running. Restart the server.
 - **"Outdated server" / "Outdated client" when joining**: the game and server versions differ. Re-run

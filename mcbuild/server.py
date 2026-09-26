@@ -107,9 +107,9 @@ class MinecraftServer:
             raise CommandError(f"data get entity {name} Rotation", response)
         return parse_entity_list(response)[0]
 
-    def tell(self, message: str) -> None:
+    def tell(self, message: str, target: str = "@a") -> None:
         component = {"text": "[mcbuild] ", "color": "gold", "extra": [{"text": message, "color": "white"}]}
-        self.run("tellraw @a " + json.dumps(component))
+        self.run(f"tellraw {target} " + json.dumps(component))
 
     # --- blocks --------------------------------------------------------------------------
 
