@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from typing import Callable, Dict, List, Optional
 
 REPORT_PATH = os.path.join("generated", "reports", "blocks.json")
@@ -69,6 +70,22 @@ def find_java(server_dir: str) -> str:
     return shutil.which("java") or "java"
 
 
+def generate_report(server_dir: str) -> None:
+    """Run the server's data generator and copy blocks.json into the server folder.
+
+    The generator runs in a temporary folder: it writes its own logs/latest.log, which would
+    otherwise replace the running server's log that `mcbuild listen` reads chat from."""
+    jar = os.path.abspath(os.path.join(server_dir, "server.jar"))
+    with tempfile.TemporaryDirectory(prefix="mcbuild-reports-") as work:
+        subprocess.run(
+            [find_java(server_dir), "-DbundlerMainClass=net.minecraft.data.Main", "-jar", jar, "--reports"],
+            cwd=work, capture_output=True, text=True, timeout=600, check=True,
+        )
+        target = os.path.join(server_dir, REPORT_PATH)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.copyfile(os.path.join(work, REPORT_PATH), target)
+
+
 def ensure_catalog(server_dir: str, log: Callable[[str], None] = print) -> Optional[BlockCatalog]:
     """Load the block list, generating it first if it's missing or older than server.jar."""
     jar = os.path.join(server_dir, "server.jar")
@@ -77,11 +94,7 @@ def ensure_catalog(server_dir: str, log: Callable[[str], None] = print) -> Optio
     if stale:
         log("Generating the block list from the server (one time, about 30 seconds)...")
         try:
-            subprocess.run(
-                [find_java(server_dir), "-DbundlerMainClass=net.minecraft.data.Main", "-jar", "server.jar",
-                 "--reports"],
-                cwd=server_dir, capture_output=True, text=True, timeout=600, check=True,
-            )
+            generate_report(server_dir)
         except (OSError, subprocess.SubprocessError) as e:
             log(f"Couldn't generate the block list ({e}); block names won't be checked in advance.")
     catalog = BlockCatalog.load(server_dir)
