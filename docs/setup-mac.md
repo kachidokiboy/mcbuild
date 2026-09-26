@@ -29,9 +29,6 @@ pip install --upgrade pip        # the pip bundled with macOS's Python is too ol
 pip install -e .
 ```
 
-> Until the work is merged into `main`, switch to the development branch right after `cd mcbuild`:
-> `git checkout claude/lucid-hamilton-fsypzb`
-
 ## 3. Create the server
 
 ```sh
