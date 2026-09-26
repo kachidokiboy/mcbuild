@@ -10,13 +10,14 @@ feature built into the official server). You join that server from your normal M
 Open **Terminal** and install [Homebrew](https://brew.sh) if you don't have it, then:
 
 ```sh
-brew install --cask temurin@21   # Java for the Minecraft server
+brew install --cask temurin@25   # Java for the Minecraft server
 brew install python              # Python 3.9 or newer
-java -version                    # should say 21 or higher
+java -version                    # should say 25 or higher
 ```
 
-> If `mcbuild setup-server` later says a newer Java version is needed (Mojang sometimes raises it),
-> install that version the same way, for example `brew install --cask temurin@25`.
+> `mcbuild setup-server` prints the Java version your Minecraft release needs. If it asks for a
+> newer one, install that version the same way. You can keep older versions installed:
+> `server/start.sh` picks a new enough one automatically.
 
 ## 2. Install mcbuild
 
@@ -56,6 +57,16 @@ Wait for `Done (...)! For help, type "help"`. Leave this window open. Type `stop
 
 Launch Minecraft (Java Edition), then choose **Multiplayer → Direct Connection → `localhost`**.
 
+The first time, if it says you're **not white-listed**, add yourself in the server window
+(the one running `start.sh`), using your Minecraft username:
+
+```
+whitelist add YourMinecraftName
+op YourMinecraftName
+```
+
+`op` is optional. It lets you use commands like `/gamemode` in game.
+
 ## 6. Build
 
 Back in the first Terminal window (with the `.venv` activated):
@@ -73,10 +84,13 @@ Useful options:
 | `mcbuild demo --rate 50` | Build more slowly (blocks per second; `0` = as fast as possible) |
 | `mcbuild demo --distance 8` | Leave more room between you and the build |
 | `mcbuild demo --at 100 64 100` | Build at fixed coordinates |
+| `mcbuild gallery` | Build a row of sample buildings: cottage, brick house, towers, gate wall, stairs |
+| `mcbuild gallery --sample wizard-tower` | Build just one of them |
 | `mcbuild history` | List builds that can still be undone |
 
 ## Troubleshooting
 
+- **"You are not white-listed on this server"**: see step 5.
 - **`Could not connect to RCON`**: the server isn't running or hasn't finished starting.
 - **`RCON password was rejected`**: `server/server.properties` was changed while the server was running. Restart the server.
 - **"Outdated server" / "Outdated client" when joining**: the game and server versions differ. Re-run
