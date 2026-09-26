@@ -1,0 +1,8 @@
+# Local Minecraft server (world, jar, password)
+server/
+# Build history / undo state
+.mcbuild/
+__pycache__/
+*.egg-info/
+.venv/
+.pytest_cache/
