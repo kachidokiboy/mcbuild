@@ -17,9 +17,9 @@ from .gallery import SAMPLES, gallery, sample
 from .history import History
 from .listen import HELP, follow, parse_chat, parse_command
 from .model import Build
-from .pipeline import PlaceOptions, ai_build, place_in_front, save_design
+from .pipeline import PlaceOptions, ai_build, find_design, list_designs, load_design, place_in_front, save_design
 from .rcon import RconClient, RconError
-from .sandbox import ScriptError, run_script_isolated
+from .sandbox import ScriptError
 from .sequence import build_order
 from .server import CommandError, MinecraftServer
 from .serversetup import read_properties, setup_server
@@ -84,24 +84,35 @@ def cmd_build(args) -> None:
         d = design(request, client, catalog)
         path = save_design(request, d)
         print(f"Design '{d.build.name}' ({len(d.build)} blocks, bounds {d.build.bounds()}) saved to {path}")
-        print(f"Build it later with: mcbuild script {path}")
+        print(f"Build it with: mcbuild script {os.path.basename(path).split('-', 1)[0].lstrip('0')}")
         return
     entry = ai_build(request, lambda: _connect(args), client, catalog, _history(), _options(args))
     print(f"Build #{entry.id} placed at {tuple(entry.min)}..{tuple(entry.max)}")
 
 
+def _resolve_design_path(query: str) -> str:
+    return query if os.path.exists(query) else find_design(query).path
+
+
 def cmd_script(args) -> None:
-    with open(args.path) as f:
-        source = f.read()
-    build = run_script_isolated(source)
-    problems = []
-    catalog = ensure_catalog(args.server_dir)
-    if catalog:
-        from .blocks import check_blocks
-        problems = check_blocks([blk for _, blk in build], catalog)
-    if problems:
-        raise ScriptError("Invalid blocks:\n  " + "\n  ".join(problems))
-    _place(args, build)
+    path = _resolve_design_path(args.design)
+    _place(args, load_design(path, ensure_catalog(args.server_dir)))
+
+
+def cmd_designs(args) -> None:
+    designs = list_designs()
+    if not designs:
+        print("No saved designs yet. Make one with `mcbuild build ...` or !build in chat.")
+    for d in designs:
+        print(f"#{d.number:<4} {d.name:<30} {d.request}")
+
+
+def _recent_designs_message(limit: int = 8) -> str:
+    designs = list_designs()[-limit:]
+    if not designs:
+        return "No saved designs yet. Make one with !build <description>."
+    return "Saved designs: " + ", ".join(f"#{d.number} {d.name}" for d in reversed(designs)) + \
+        ". Use !rebuild <number> to build one again."
 
 
 def cmd_listen(args) -> None:
@@ -124,6 +135,17 @@ def cmd_listen(args) -> None:
             if name == "build" and rest:
                 opts = PlaceOptions(player=player, distance=args.distance, rate=args.rate, backup=not args.no_backup)
                 ai_build(rest, connect, client, catalog, history, opts)
+            elif name == "rebuild" and rest:
+                saved = find_design(rest)
+                build = load_design(saved.path, catalog)
+                with connect() as rcon:
+                    server = MinecraftServer(rcon)
+                    server.tell(f"Rebuilding design #{saved.number} {build.name} ({len(build)} blocks).", player)
+                    place_in_front(server, build, history, PlaceOptions(
+                        player=player, distance=args.distance, rate=args.rate, backup=not args.no_backup))
+            elif name == "designs":
+                with connect() as rcon:
+                    MinecraftServer(rcon).tell(_recent_designs_message(), player)
             elif name == "undo":
                 with connect() as rcon:
                     entry = undo_last(MinecraftServer(rcon), history)
@@ -131,7 +153,8 @@ def cmd_listen(args) -> None:
             else:
                 with connect() as rcon:
                     MinecraftServer(rcon).tell(HELP, player)
-        except (RconError, CommandError, BuildAborted, DesignError, RuntimeError, ValueError) as e:
+        except (RconError, CommandError, BuildAborted, DesignError, ScriptError, RuntimeError, ValueError,
+                OSError) as e:
             print(f"Error: {e}", file=sys.stderr)
             try:
                 with connect() as rcon:
@@ -217,10 +240,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("request", nargs="+", help="What to build")
     p.set_defaults(func=cmd_build)
 
-    p = sub.add_parser("script", help="Build a saved design script (from .mcbuild/designs) without the AI")
+    p = sub.add_parser("script", help="Build a saved design again without the AI (free)")
     add_placement(p, rate=300)
-    p.add_argument("path")
+    p.add_argument("design", help="Design number or name (see `mcbuild designs`), or a script file")
     p.set_defaults(func=cmd_script)
+
+    p = sub.add_parser("designs", help="List saved designs")
+    p.set_defaults(func=cmd_designs)
 
     p = sub.add_parser("demo", help="Build a test hut in front of you")
     add_placement(p)

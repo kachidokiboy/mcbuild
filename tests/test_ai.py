@@ -96,7 +96,7 @@ class FakeClaude:
     def __init__(self, replies):
         self.replies = list(replies)
         self.requests = []
-        self.beta = SimpleNamespace(messages=SimpleNamespace(stream=self._stream))
+        self.messages = SimpleNamespace(stream=self._stream)
 
     def _stream(self, **kwargs):
         self.requests.append({**kwargs, "messages": list(kwargs["messages"])})
@@ -125,7 +125,8 @@ def test_design_fixes_invalid_blocks_on_second_attempt():
     followup = claude.requests[1]["messages"][-1]["content"]
     assert "oak_plank" in followup and "did you mean oak_planks" in followup
     first = claude.requests[0]
-    assert first["model"] == "claude-opus-5" and first["thinking"] == {"type": "adaptive"}
+    assert first["model"] == "claude-opus-5-5" and first["thinking"] == {"type": "adaptive"}
+    assert "betas" not in first and "fallbacks" not in first.get("extra_body", {})
     assert first["system"][0]["cache_control"] == {"type": "ephemeral"}
 
 
@@ -213,3 +214,46 @@ def test_ai_build_end_to_end(tmp_path, monkeypatch):
     saved = os.listdir(".mcbuild/designs")
     assert len(saved) == 1 and saved[0].endswith("tiny-tower.py")
     assert open(f".mcbuild/designs/{saved[0]}").read().startswith("# Request: a tiny tower")
+
+
+# --- saved designs --------------------------------------------------------------------------
+
+def test_saved_designs_numbering_and_lookup(tmp_path, monkeypatch):
+    from mcbuild.designer import Design
+    from mcbuild.pipeline import find_design, list_designs, load_design, save_design
+
+    monkeypatch.chdir(tmp_path)
+    tower = Design(run_script(GOOD_SCRIPT), GOOD_SCRIPT, 1)
+    save_design("a tiny tower", tower)
+    save_design("another tiny tower by the lake", tower)
+    os.remove(list_designs()[0].path)
+    third = save_design("a tiny tower again", tower)
+    assert os.path.basename(third).startswith("003-")  # numbers are never reused
+    assert [d.number for d in list_designs()] == [2, 3]
+    assert find_design("2").request == "another tiny tower by the lake"
+    assert find_design("#3").number == 3
+    assert find_design("lake").number == 2
+    assert find_design("tiny tower").number == 3  # most recent match
+    with pytest.raises(ValueError, match="no saved design #9"):
+        find_design("9")
+    with pytest.raises(ValueError, match="No saved design matches"):
+        find_design("castle")
+    assert load_design(third, CATALOG).name == "Tiny Tower"
+
+
+def test_cli_rebuilds_saved_design_by_number(tmp_path, monkeypatch):
+    from mcbuild.cli import main
+    from mcbuild.designer import Design
+    from mcbuild.pipeline import save_design
+
+    monkeypatch.chdir(tmp_path)
+    save_design("a tiny tower", Design(run_script(GOOD_SCRIPT), GOOD_SCRIPT, 1))
+    game = FakeMinecraft(players={"Chris": ((0.5, 64.0, 0.5), (0.0, 0.0))})
+    srv = FakeRconServer(game, password="pw")
+    try:
+        assert main(["designs"]) == 0
+        assert main(["script", "1", "--rate", "0", "--port", str(srv.port), "--password", "pw"]) == 0
+        assert main(["script", "tower", "--rate", "0", "--port", str(srv.port), "--password", "pw"]) == 0
+    finally:
+        srv.close()
+    assert any("stone_bricks" in blk for blk in game.world.values())

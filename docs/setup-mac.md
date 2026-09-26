@@ -116,11 +116,20 @@ Useful options:
    ```
 
    Designing takes a minute or two. You'll see progress messages in chat, then the building rises
-   in front of you. `!undo` removes the last build, and `!help` lists the commands.
+   in front of you.
 
-Each design costs a little API usage, typically well under $1; bigger builds and fixes cost more.
-You can also build from the terminal with `mcbuild build "a stone watchtower"`. Every design is saved
-in `.mcbuild/designs/`, and `mcbuild script .mcbuild/designs/001-...py` builds one again for free.
+| Chat command | What it does |
+|---|---|
+| `!build <description>` | Design something new with AI and build it |
+| `!designs` | List your saved designs |
+| `!rebuild <number or name>` | Build a saved design again, with no AI and no cost (e.g. `!rebuild 3`, `!rebuild tower`) |
+| `!undo` | Remove the last build |
+| `!help` | Show the commands |
+
+Each new design costs a little API usage, typically well under $1; bigger builds and fixes cost more.
+Every design is saved automatically, so rebuilding one is free. From the terminal,
+`mcbuild build "a stone watchtower"` designs something new, `mcbuild designs` lists saved designs, and
+`mcbuild script 3` rebuilds design #3.
 
 ## Troubleshooting
 

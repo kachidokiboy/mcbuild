@@ -46,9 +46,11 @@ prompt ──► Claude writes a build script ──► run it ──► voxel m
   Every block is checked against the list of valid blocks exported from your own server, and any
   problems go back to Claude to fix, up to 3 attempts.
 - **Chat commands:** `mcbuild listen` watches the server log for `!build <description>`,
-  `!undo` and `!help`, and replies in chat.
-- **Saved designs:** every design script is saved in `.mcbuild/designs/`. Rebuild one without the
-  AI (no API cost) with `mcbuild script <file>`.
+  `!designs`, `!rebuild <number or name>`, `!undo` and `!help`, and replies in chat.
+- **Saved designs:** every design is saved automatically as a numbered script in
+  `.mcbuild/designs/`. `!rebuild 3` (or `mcbuild script 3`) builds it again with no AI and no API
+  cost. `mcbuild designs` lists them. The model defaults to Claude Opus 5.5 (`MCBUILD_MODEL`
+  overrides it).
 
 ## Building library
 

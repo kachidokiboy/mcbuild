@@ -14,7 +14,7 @@ from .materials import MATERIALS
 from .model import Build
 from .sandbox import API_NAMES, ScriptError, run_script_isolated
 
-DEFAULT_MODEL = "claude-opus-5"
+DEFAULT_MODEL = "claude-opus-5-5"
 MAX_ATTEMPTS = 3
 MAX_FOOTPRINT = 256
 MAX_HEIGHT = 200
@@ -148,15 +148,14 @@ def validate(build: Build, catalog: Optional[BlockCatalog]) -> List[str]:
 
 
 def _ask(client, model: str, messages: list):
-    # Newer request options go in extra_body so older SDK versions (e.g. on Python 3.9) still work.
-    with client.beta.messages.stream(
+    # output_config goes in extra_body so older SDK versions (e.g. on Python 3.9) still accept it.
+    with client.messages.stream(
         model=model,
         max_tokens=64000,
-        betas=["server-side-fallback-2026-07-01"],
         system=[{"type": "text", "text": system_prompt(), "cache_control": {"type": "ephemeral"}}],
         thinking={"type": "adaptive"},
         messages=messages,
-        extra_body={"output_config": {"effort": "high"}, "fallbacks": "default"},
+        extra_body={"output_config": {"effort": "high"}},
     ) as stream:
         return stream.get_final_message()
 

@@ -12,6 +12,7 @@ from typing import Callable, Iterator, Optional, Tuple
 _CHAT_RE = re.compile(r"\]: (?:\[Not Secure\] )?<([A-Za-z0-9_]{1,16})> (.*)$")
 
 HELP = ("Commands: !build <description> (e.g. !build a cozy oak cottage with a chimney), "
+        "!designs (list saved designs), !rebuild <number or name> (build a saved design again, free), "
         "!undo (remove the last build), !help")
 
 
