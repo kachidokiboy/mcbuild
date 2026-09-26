@@ -103,7 +103,7 @@ def setup_server(
 ) -> None:
     os.makedirs(directory, exist_ok=True)
     jar_path = os.path.join(directory, "server.jar")
-    java_major = 21
+    java_major = 25
 
     if jar:
         with open(jar, "rb") as src, open(jar_path, "wb") as dst:

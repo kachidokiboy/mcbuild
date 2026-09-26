@@ -10,13 +10,14 @@ feature built into the official server). You join that server from your normal M
 Open **Terminal** and install [Homebrew](https://brew.sh) if you don't have it, then:
 
 ```sh
-brew install --cask temurin@21   # Java for the Minecraft server
+brew install --cask temurin@25   # Java for the Minecraft server
 brew install python              # Python 3.9 or newer
-java -version                    # should say 21 or higher
+java -version                    # should say 25 or higher
 ```
 
-> If `mcbuild setup-server` later says a newer Java version is needed (Mojang sometimes raises it),
-> install that version the same way, for example `brew install --cask temurin@25`.
+> `mcbuild setup-server` prints the Java version your Minecraft release needs. If it asks for a
+> newer one, install that version the same way. You can keep older versions installed:
+> `server/start.sh` picks a new enough one automatically.
 
 ## 2. Install mcbuild
 
