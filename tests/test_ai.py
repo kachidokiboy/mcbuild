@@ -648,3 +648,73 @@ def test_edit_needs_an_editable_build(tmp_path):
     place_build(MinecraftServer(FakeMinecraft()), b, history, rate=0, progress=lambda m: None)
     with pytest.raises(ValueError, match="can't be edited"):
         edit_last("x", None, None, None, history, PlaceOptions())
+
+
+# --- preview and confirm ---------------------------------------------------------------------
+
+def _chat(player, text):
+    return f"[12:00:00] [Server thread/INFO]: <{player}> {text}"
+
+
+def test_chat_inbox_holds_other_commands_while_waiting():
+    from mcbuild.listen import ChatInbox
+    lines = [_chat("Alex", "!build a hut"), "[12:00:01] [Server thread/INFO]: Alex joined the game",
+             _chat("Chris", "hello"), _chat("Chris", "!go"), _chat("Alex", "!undo")]
+    inbox = ChatInbox(iter(lines))
+    assert inbox.wait_for("Chris", ("go", "cancel"), timeout=2) == "go"
+    assert inbox.get(timeout=2) == ("Alex", "build", "a hut")  # held while waiting, kept in order
+    assert inbox.get(timeout=2) == ("Alex", "undo", "")
+    assert inbox.get(timeout=0.1) is None
+    assert inbox.wait_for("Chris", ("go",), timeout=0.1) is None  # timed out
+
+
+def test_cancel_at_preview_restores_the_site_and_spends_one_call(tmp_path, monkeypatch):
+    from mcbuild.pipeline import Cancelled
+    monkeypatch.chdir(tmp_path)
+    game = FakeMinecraft(players={"Chris": ((0.5, 64.0, 0.5), (0.0, 0.0))})
+    original = dict(game.world)
+    srv = FakeRconServer(game, password="pw")
+
+    def connect():
+        client = RconClient("127.0.0.1", srv.port, "pw")
+        client.connect()
+        return client
+
+    claude = FakeClaude([_site("Big Hall", 30, 22, 7)])
+    seen = []
+    history = History("h.json")
+    try:
+        with pytest.raises(Cancelled):
+            ai_build("a big hall", connect, claude, CATALOG, history, PlaceOptions(player="Chris", rate=0),
+                     log=lambda m: None, confirm=lambda site: seen.append(site.name) or False)
+    finally:
+        srv.close()
+    assert seen == ["Big Hall"] and len(claude.requests) == 1
+    # The preview was shown (carpet outline and glass corner posts), then everything was put back.
+    assert any("yellow_stained_glass" in c for c in game.log)
+    assert all(game.block(p) == b for p, b in original.items())
+    assert not [p for p, b in game.world.items() if "carpet" in b or "glass" in b]
+    assert history.last() is None and not os.path.exists(".mcbuild/designs")
+    assert any("Type !go" in c for c in game.log) and any("Cancelled" in c for c in game.log)
+    assert not game.forceloaded and "bossbar remove mcbuild:progress" in game.log
+
+
+def test_go_at_preview_builds_and_removes_the_markers(tmp_path, monkeypatch):
+    replies = [_site("Big Hall", 30, 22, 7), code(STRUCTURE), code(DETAIL)]
+    monkeypatch.chdir(tmp_path)
+    game = FakeMinecraft(players={"Chris": ((0.5, 64.0, 0.5), (0.0, 0.0))})
+    srv = FakeRconServer(game, password="pw")
+
+    def connect():
+        client = RconClient("127.0.0.1", srv.port, "pw")
+        client.connect()
+        return client
+
+    try:
+        entry = ai_build("a big hall", connect, FakeClaude(replies), CATALOG, History("h.json"),
+                         PlaceOptions(player="Chris", rate=0), log=lambda m: None, confirm=lambda site: True)
+    finally:
+        srv.close()
+    assert entry.name == "Big Hall"
+    assert not [p for p, b in game.world.items() if "carpet" in b or "stained_glass" in b]
+    assert len([p for p, b in game.world.items() if "glass_pane" in b]) == 6

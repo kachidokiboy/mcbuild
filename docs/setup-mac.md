@@ -116,12 +116,17 @@ Useful options:
    ```
 
    A progress bar appears at the top of the screen. Within seconds the site is marked on the
-   ground with yellow carpet (white for the main parts). For larger buildings the basic structure
-   goes up next, and the details are added on top once Claude has designed them.
+   ground with yellow carpet (white for the main parts), with glass posts at the corners showing
+   how tall it will be. Type `!go` to build it or `!cancel` to drop it; only the quick planning
+   step has been paid for at that point. After `!go`, larger buildings get their basic structure
+   first, and the details are added on top once Claude has designed them.
+
+   To skip the preview, start the listener with `mcbuild listen --no-confirm`.
 
 | Chat command | What it does |
 |---|---|
 | `!build <description>` | Design something new with AI and build it |
+| `!go` / `!cancel` | Build the planned site, or drop it (after `!build`) |
 | `!edit <change>` | Change the last build, e.g. `!edit make the towers taller` or `!edit add a moat` |
 | `!designs` | List your saved designs |
 | `!rebuild <number or name>` | Build a saved design again, with no AI and no cost (e.g. `!rebuild 3`, `!rebuild tower`) |

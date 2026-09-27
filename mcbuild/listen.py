@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import os
+import queue
 import re
+import threading
 import time
-from typing import Callable, Iterator, Optional, Tuple
+from collections import deque
+from typing import Callable, Collection, Deque, Iterable, Iterator, Optional, Tuple
 
 # e.g. "[12:34:56] [Server thread/INFO]: <Chris> !build a tower"
 #      "[12:34:56] [Server thread/INFO]: [Not Secure] <Chris> !build a tower"
 _CHAT_RE = re.compile(r"\]: (?:\[Not Secure\] )?<([A-Za-z0-9_]{1,16})> (.*)$")
 
-HELP = ("Commands: !build <description> (e.g. !build a cozy oak cottage with a chimney), "
+HELP = ("Commands: !build <description> (e.g. !build a cozy oak cottage with a chimney; "
+        "you'll see the planned site first, then type !go or !cancel), "
         "!edit <change> (change the last build, e.g. !edit make the towers taller), "
         "!designs (list saved designs), !rebuild <number or name> (build a saved design again, free), "
         "!undo (revert the last edit, or remove the last build), !help")
@@ -64,3 +68,48 @@ def follow(path: str, poll: float = 0.5, should_stop: Callable[[], bool] = lambd
         time.sleep(poll)
     if handle:
         handle.close()
+
+
+Command = Tuple[str, str, str]  # (player, command name, rest)
+
+
+class ChatInbox:
+    """Reads chat commands in a background thread, so a build that's waiting for `!go` can still
+    hear it. Commands that arrive during a build are kept, in order, for afterwards."""
+
+    def __init__(self, lines: Iterable[str]):
+        self._queue: "queue.Queue[Command]" = queue.Queue()
+        self._held: Deque[Command] = deque()
+        self._thread = threading.Thread(target=self._read, args=(lines,), daemon=True)
+        self._thread.start()
+
+    def _read(self, lines: Iterable[str]) -> None:
+        for line in lines:
+            chat = parse_chat(line)
+            command = chat and parse_command(chat[1])
+            if command:
+                self._queue.put((chat[0], *command))
+
+    def get(self, timeout: Optional[float] = None) -> Optional[Command]:
+        """The next command, oldest first (None on timeout)."""
+        if self._held:
+            return self._held.popleft()
+        try:
+            return self._queue.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    def wait_for(self, player: str, names: Collection[str], timeout: float) -> Optional[str]:
+        """Wait for `player` to send one of `names` (e.g. go/cancel); other commands are held."""
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            try:
+                item = self._queue.get(timeout=remaining)
+            except queue.Empty:
+                return None
+            if item[0] == player and item[1] in names:
+                return item[1]
+            self._held.append(item)
