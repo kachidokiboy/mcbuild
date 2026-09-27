@@ -4,20 +4,23 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Callable, ContextManager, Iterator, List, Optional, Tuple
 
 from .blocks import check_blocks
 from .config import DESIGNS_DIR
-from .designer import Design, DesignError, design
+from .designer import Design, DesignError, design, plan_site
 from .executor import place_build
 from .history import History, HistoryEntry
-from .model import Build
-from .placement import face_toward_player, offset_in_front, yaw_to_direction
+from .model import Build, Pos
+from .placement import offset_in_front, turns_to_face, yaw_to_direction
+from .progress import ProgressBar
 from .rcon import RconClient
 from .sandbox import ScriptError, run_script_isolated
 from .server import MinecraftServer
+from .staging import SiteBuilder
 
 Log = Callable[[str], None]
 
@@ -35,15 +38,8 @@ class PlaceOptions:
 def place_in_front(server: MinecraftServer, design_build: Build, history: History, opts: PlaceOptions,
                    log: Log = print) -> HistoryEntry:
     """Place a north-fronted design in front of the player (or at opts.at), front facing them."""
-    if opts.at:
-        origin, facing = opts.at, opts.facing or "south"
-    else:
-        player = server.resolve_player(opts.player)
-        origin = server.player_position(player)
-        facing = opts.facing or yaw_to_direction(server.player_yaw(player))
-        log(f"{player} is at {tuple(round(v, 1) for v in origin)}, facing {facing}")
-    build = face_toward_player(design_build, facing)
-    build = build.translated(*offset_in_front(build, origin, facing, opts.distance))
+    placement = placement_for(server, *design_build.bounds(), opts, log)
+    build = placement.apply(design_build)
     return place_build(server, build, history, rate=opts.rate, backup=opts.backup, progress=log)
 
 
@@ -121,28 +117,128 @@ def _server(connect: Connect) -> Iterator[MinecraftServer]:
         yield MinecraftServer(rcon)
 
 
+@dataclass
+class Placement:
+    """Where a design goes in the world: quarter turns, then a translation."""
+    turns: int
+    offset: Pos
+
+    def apply(self, build: Build) -> Build:
+        return build.rotated(self.turns).translated(*self.offset)
+
+
+def placement_for(server: MinecraftServer, box_min: Pos, box_max: Pos, opts: PlaceOptions, log: Log = print) -> Placement:
+    """Place a design box in front of the player (or at opts.at), its front (north side) facing them."""
+    if opts.at:
+        origin, facing = opts.at, opts.facing or "south"
+    else:
+        player = server.resolve_player(opts.player)
+        origin = server.player_position(player)
+        facing = opts.facing or yaw_to_direction(server.player_yaw(player))
+        log(f"{player} is at {tuple(round(v, 1) for v in origin)}, facing {facing}")
+    box = Build()
+    box.set(*box_min, "stone")
+    box.set(*box_max, "stone")
+    turns = turns_to_face(facing)
+    return Placement(turns, offset_in_front(box.rotated(turns), origin, facing, opts.distance))
+
+
 def ai_build(request: str, connect: Connect, client, catalog, history: History, opts: PlaceOptions,
              log: Log = print) -> HistoryEntry:
-    """Design `request` with Claude and build it in front of the player, keeping them posted in chat.
-    The RCON connection is opened only when needed, since designing can take a few minutes."""
+    """Design `request` with Claude in three passes and build each as it's ready, with a progress
+    bar at the top of the player's screen:
+
+    1. site plan: size and layout, marked on the ground within seconds
+    2. structure: walls, floors, roofs and towers, built while pass 3 is being designed
+    3. details: the final design; only changed blocks are placed, and removed ones restored
+
+    Small buildings skip pass 2."""
     with _server(connect) as server:
         player = opts.player if opts.at else server.resolve_player(opts.player)
         target = player or "@a"
-        server.tell(f"Designing \"{request}\"... this usually takes a minute or two.", target)
+        server.tell(f"Designing \"{request}\"...", target)
+        with ProgressBar(server, target, log) as bar:
+            try:
+                return _staged_build(request, server, target, bar, client, catalog, history, opts, log)
+            except DesignError as e:
+                server.tell(f"Sorry, that didn't work: {e}", target)
+                raise
 
+
+def _staged_build(request, server, target, bar, client, catalog, history, opts, log) -> HistoryEntry:
+    bar.designing("Planning the site")
+    site = plan_site(request, client, status=bar.note, log=log)
+    bar.designed()
+    log(f"Site: {site.name}, {site.width}x{site.depth}, {site.height} tall, parts: "
+        + ", ".join(p["name"] for p in site.parts))
+
+    placement = placement_for(server, *site.box(), opts, log)
+    world_box = placement.apply(_box_build(*site.box()))
+    builder = SiteBuilder(server, history, *world_box.bounds(), name=site.name, rate=opts.rate,
+                          backup=opts.backup, log=log)
+    entry = builder.start()
+    final: Optional[Design] = None
     try:
-        d = design(request, client, catalog, log=log)
-    except DesignError as e:
-        with _server(connect) as server:
-            server.tell(f"Sorry, that didn't work: {e}", target)
-        raise
-    path = save_design(request, d)
-    number = int(os.path.basename(path).split("-", 1)[0])
-    log(f"Design '{d.build.name}' ({len(d.build)} blocks) saved to {path}")
+        bar.building("Marking the site")
+        builder.apply(placement.apply(site.outline()), bar.built)
+        bar.done_building()
+        server.tell(f"Planned {site.name} ({site.width}x{site.depth}); the site is marked.", target)
 
-    with _server(connect) as server:
-        seconds = len(d.build) / opts.rate if opts.rate > 0 else 0
-        server.tell(f"Building {d.build.name}: {len(d.build)} blocks, about {max(1, round(seconds))}s. "
-                    f"Saved as design #{number}: !rebuild {number} builds it again for free, "
-                    "!undo removes it.", target)
-        return place_in_front(server, d.build, history, PlaceOptions(**{**opts.__dict__, "player": player}), log)
+        structure: Optional[Design] = None
+        if not site.small:
+            bar.designing("Designing the structure")
+            try:
+                structure = design(request, client, catalog, site=site, stage="structure", status=bar.note, log=log)
+            except DesignError as e:
+                log(f"The structure pass failed ({e}); going straight to the detailed design.")
+            bar.designed()
+
+        # Design the details while the structure goes up.
+        result: dict = {}
+
+        def design_details() -> None:
+            try:
+                result["design"] = design(request, client, catalog, site=site, stage="final",
+                                          base_script=structure.script if structure else None,
+                                          status=bar.note, log=log)
+            except BaseException as e:  # noqa: BLE001 - re-raised in the main thread
+                result["error"] = e
+
+        bar.designing("Designing details" if structure else "Designing")
+        worker = threading.Thread(target=design_details, daemon=True)
+        worker.start()
+        if structure:
+            bar.building("Building the structure")
+            builder.apply(placement.apply(structure.build), bar.built)
+            bar.done_building()
+        worker.join()
+        bar.designed()
+
+        if "error" in result:
+            if structure and isinstance(result["error"], DesignError):
+                server.tell(f"Couldn't add the details ({result['error']}); keeping the basic structure.", target)
+                final = structure
+            else:
+                raise result["error"]
+        else:
+            final = result["design"]
+        name = final.build.name if final.build.name != "design" else site.name
+        bar.building("Adding details" if structure else f"Building {name}")
+        builder.apply(placement.apply(final.build), bar.built)
+        bar.done_building()
+    finally:
+        builder.finish(final.build.name if final and final.build.name != "design" else site.name)
+
+    path = save_design(request, final)
+    number = int(os.path.basename(path).split("-", 1)[0])
+    log(f"Design '{entry.name}' ({len(final.build)} blocks) saved to {path}")
+    server.tell(f"Finished {entry.name}! Saved as design #{number}: !rebuild {number} builds it again for free, "
+                "!undo removes it.", target)
+    return entry
+
+
+def _box_build(box_min: Pos, box_max: Pos) -> Build:
+    b = Build()
+    b.set(*box_min, "stone")
+    b.set(*box_max, "stone")
+    return b

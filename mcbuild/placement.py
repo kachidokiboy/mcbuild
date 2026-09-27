@@ -44,7 +44,11 @@ def offset_in_front(build: Build, player: Tuple[float, float, float], facing: st
     return tx - x1, py, tz - z1
 
 
+def turns_to_face(player_facing: str) -> int:
+    """Clockwise quarter turns that make a north-fronted design face a player looking `player_facing`."""
+    return ["north", "east", "south", "west"].index(OPPOSITE[player_facing])
+
+
 def face_toward_player(design: Build, player_facing: str) -> Build:
     """Rotate a north-fronted design so its front faces a player looking `player_facing`."""
-    front = OPPOSITE[player_facing]
-    return design.rotated(["north", "east", "south", "west"].index(front))
+    return design.rotated(turns_to_face(player_facing))

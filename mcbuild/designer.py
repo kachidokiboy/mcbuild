@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import os
 import re
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ MAX_FOOTPRINT = 256
 MAX_HEIGHT = 200
 
 Log = Callable[[str], None]
+Status = Callable[[str], None]
 
 
 class DesignError(Exception):
@@ -120,6 +122,8 @@ Design something that looks good in the game, not a plain box:
 - A few simple interior touches (floors, a table, a bed, bookshelves) for houses.
 - For castles: keep, towers, curtain walls with walkways and battlements, a gatehouse; plan the
   layout first as comments, then build each part with its own helper function and loops.
+- Start each major part of the script with a heading comment like `# == Gatehouse ==`; the
+  player sees these headings as progress while you write.
 - Keep it structurally believable: no floating pieces, every roof closed, doors reachable.
 
 # Answer format
@@ -132,7 +136,7 @@ def _extract_code(text: str) -> Optional[str]:
     return max(blocks, key=len) if blocks else None
 
 
-def validate(build: Build, catalog: Optional[BlockCatalog]) -> List[str]:
+def validate(build: Build, catalog: Optional[BlockCatalog], site: Optional["SitePlan"] = None) -> List[str]:
     if not len(build):
         return ["The script didn't place any blocks."]
     problems = []
@@ -141,13 +145,143 @@ def validate(build: Build, catalog: Optional[BlockCatalog]) -> List[str]:
         problems.append(f"The design is {x2 - x1 + 1}x{z2 - z1 + 1} across; the limit is {MAX_FOOTPRINT}x{MAX_FOOTPRINT}.")
     if y2 - y1 + 1 > MAX_HEIGHT:
         problems.append(f"The design is {y2 - y1 + 1} blocks tall; the limit is {MAX_HEIGHT}.")
+    if site:
+        (sx1, sy1, sz1), (sx2, sy2, sz2) = site.box()
+        outside = [p for p, _ in build if not (sx1 <= p[0] <= sx2 and sy1 <= p[1] <= sy2 and sz1 <= p[2] <= sz2)]
+        if outside:
+            problems.append(f"{len(outside)} blocks are outside the site (e.g. at {sorted(outside)[0]}). Keep x in "
+                            f"{sx1}..{sx2}, y in {sy1}..{sy2}, z in {sz1}..{sz2}.")
     if catalog:
         bad = check_blocks([blk for _, blk in build], catalog)
         problems += [f"Invalid block {p}" for p in bad]
     return problems
 
 
-def _ask(client, model: str, messages: list):
+# --- site plan (pass 1) ------------------------------------------------------------------
+
+SITE_MARGIN = 2  # roof overhangs etc. may extend this far beyond the planned footprint
+SMALL_SITE_AREA = 20 * 20
+
+
+@dataclass
+class SitePlan:
+    name: str
+    width: int   # along x (east-west)
+    depth: int   # along z (north-south); the front is at z = 0
+    height: int
+    parts: List[dict]
+
+    def box(self):
+        """The volume every pass must stay inside, in design coordinates."""
+        m = SITE_MARGIN
+        return (-m, -6, -m), (self.width - 1 + m, self.height + 12, self.depth - 1 + m)
+
+    @property
+    def small(self) -> bool:
+        return self.width * self.depth <= SMALL_SITE_AREA
+
+    def to_json(self) -> str:
+        return json.dumps({"name": self.name, "width": self.width, "depth": self.depth,
+                           "height": self.height, "parts": self.parts})
+
+    def outline(self) -> Build:
+        """Markers on the ground: the site's edge in yellow, each part's footprint in white."""
+        from .primitives import rect_perimeter
+        b = Build(f"{self.name} (site)")
+        for part in self.parts:
+            for x, z in rect_perimeter((part["x1"], part["z1"]), (part["x2"], part["z2"])):
+                b.set(x, 0, z, "white_carpet")
+        for x, z in rect_perimeter((0, 0), (self.width - 1, self.depth - 1)):
+            b.set(x, 0, z, "yellow_carpet")
+        return b
+
+
+def parse_site_plan(text: str) -> SitePlan:
+    match = re.findall(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL)
+    raw = match[-1] if match else text[text.find("{"):text.rfind("}") + 1]
+    try:
+        data = json.loads(raw)
+        width, depth, height = (int(data[k]) for k in ("width", "depth", "height"))
+    except (ValueError, KeyError, TypeError) as e:
+        raise DesignError(f"the site plan wasn't valid JSON ({e})") from None
+    if not (3 <= width <= MAX_FOOTPRINT and 3 <= depth <= MAX_FOOTPRINT and 3 <= height <= MAX_HEIGHT - 20):
+        raise DesignError(f"the site plan size {width}x{depth}x{height} is out of range")
+    parts = []
+    for part in data.get("parts", [])[:20]:
+        try:
+            x1, x2 = sorted(max(0, min(width - 1, int(part[k]))) for k in ("x1", "x2"))
+            z1, z2 = sorted(max(0, min(depth - 1, int(part[k]))) for k in ("z1", "z2"))
+            parts.append({"name": str(part.get("name", "part"))[:40], "x1": x1, "z1": z1, "x2": x2, "z2": z2,
+                          "height": int(part.get("height", height))})
+        except (ValueError, KeyError, TypeError):
+            continue
+    return SitePlan(str(data.get("name") or "Building")[:60], width, depth, height, parts)
+
+
+_SITE_REQUEST = """Plan the site for: {request}
+
+This is PASS 1 OF 3: only decide the size and layout; don't write a script yet. Reply with just a
+```json block like:
+{{"name": "Stormhold Castle", "width": 60, "depth": 48, "height": 32,
+ "parts": [{{"name": "Keep", "x1": 20, "z1": 18, "x2": 39, "z2": 37, "height": 32}}, ...]}}
+
+width runs along x (east-west), depth along z (north-south), height is the tallest point above
+ground. The site covers x 0..width-1 and z 0..depth-1, with the front (main entrance) at z = 0.
+List 1-12 main parts (buildings, towers, walls, courtyard, garden...) with their footprints."""
+
+
+def plan_site(request: str, client, model: Optional[str] = None, status: Optional[Status] = None,
+              log: Log = print) -> SitePlan:
+    """Pass 1: a quick call that fixes the building's size and layout."""
+    model = model or os.environ.get("MCBUILD_MODEL", DEFAULT_MODEL)
+    messages: list = [{"role": "user", "content": _SITE_REQUEST.format(request=request)}]
+    for attempt in (1, 2):
+        response = _ask_friendly(client, model, messages, effort="low", status=status)
+        if response.stop_reason == "refusal":
+            raise DesignError("Claude declined to design that; try describing it differently.")
+        text = "".join(block.text for block in response.content if block.type == "text")
+        try:
+            return parse_site_plan(text)
+        except DesignError as e:
+            if attempt == 2:
+                raise
+            log(f"Site plan problem ({e}); asking again...")
+            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "user", "content": f"Problem: {e}. Reply with just the corrected ```json block."})
+    raise AssertionError("unreachable")
+
+
+def _stage_request(request: str, site: Optional[SitePlan], stage: str, base_script: Optional[str]) -> str:
+    if site is None:
+        return f"Design this: {request}"
+    (x1, y1, z1), (x2, y2, z2) = site.box()
+    bounds = f"x {x1}..{x2}, y {y1}..{y2}, z {z1}..{z2}"
+    header = (f"Design this: {request}\n\nSite plan (already marked on the ground in the world):\n"
+              f"```json\n{site.to_json()}\n```\nKeep every block within {bounds}.\n\n")
+    if stage == "structure":
+        return header + (
+            "This is PASS 2 OF 3: write a script for the basic STRUCTURE only: foundations, floors, "
+            "outer walls, main roof shapes, towers and wall volumes, in their final materials. Leave out "
+            "windows, doors, trim, decoration, interiors and lighting; the next pass adds them by "
+            "extending your script. Use one helper function per part, each introduced by a "
+            "`# == Part name ==` heading, so it's easy to extend.")
+    if base_script:
+        return header + (
+            "This is PASS 3 OF 3. The structure below is already standing in the world. Write the "
+            "complete FINAL script: start from it and add all the detail: windows, doors, trim and "
+            "depth, roof details, battlements, interiors, lighting, paths and landscaping. You may "
+            "change the structure where it makes the design better; blocks your final script no longer "
+            "places are removed. Keep the `# == Part name ==` headings.\n\n"
+            f"```python\n{base_script.strip()}\n```")
+    return header + "Write the complete, detailed design."
+
+
+_SECTION_RE = re.compile(r"^\s*#\s*==\s*(.+?)\s*==")
+
+
+def _ask(client, model: str, messages: list, effort: str = "high", status: Optional[Status] = None):
+    """Stream one reply from Claude, reporting what it's doing ("thinking", "writing Gatehouse")."""
+    status = status or (lambda note: None)
     # output_config goes in extra_body so older SDK versions (e.g. on Python 3.9) still accept it.
     with client.messages.stream(
         model=model,
@@ -155,17 +289,30 @@ def _ask(client, model: str, messages: list):
         system=[{"type": "text", "text": system_prompt(), "cache_control": {"type": "ephemeral"}}],
         thinking={"type": "adaptive"},
         messages=messages,
-        extra_body={"output_config": {"effort": "high"}},
+        extra_body={"output_config": {"effort": effort}},
     ) as stream:
+        line = ""
+        for event in stream:
+            if event.type == "content_block_start" and event.content_block.type == "thinking":
+                status("thinking")
+            elif event.type == "content_block_start" and event.content_block.type == "text":
+                status("writing")
+            elif event.type == "content_block_delta" and event.delta.type == "text_delta":
+                line += event.delta.text
+                *complete, line = line.split("\n")
+                for text in complete:
+                    match = _SECTION_RE.match(text)
+                    if match:
+                        status(f"writing {match.group(1)}")
         return stream.get_final_message()
 
 
-def _ask_friendly(client, model: str, messages: list):
+def _ask_friendly(client, model: str, messages: list, effort: str = "high", status: Optional[Status] = None):
     """Call Claude, turning API failures into DesignErrors a player can understand."""
     import anthropic
 
     try:
-        return _ask(client, model, messages)
+        return _ask(client, model, messages, effort, status)
     except anthropic.AuthenticationError:
         raise DesignError("the Anthropic API key was rejected; run `mcbuild set-key` with a valid key") from None
     except anthropic.PermissionDeniedError:
@@ -181,13 +328,18 @@ def _ask_friendly(client, model: str, messages: list):
 
 
 def design(request: str, client, catalog: Optional[BlockCatalog] = None, model: Optional[str] = None,
-           log: Log = print, max_attempts: int = MAX_ATTEMPTS) -> Design:
-    """Have Claude write a design script for `request`, fixing problems until it's valid."""
+           log: Log = print, max_attempts: int = MAX_ATTEMPTS, site: Optional[SitePlan] = None,
+           stage: str = "final", base_script: Optional[str] = None, status: Optional[Status] = None) -> Design:
+    """Have Claude write a design script for `request`, fixing problems until it's valid.
+
+    With a site plan, stage="structure" asks for the basic structure (pass 2) and stage="final"
+    for the complete design, extending `base_script` when given (pass 3)."""
     model = model or os.environ.get("MCBUILD_MODEL", DEFAULT_MODEL)
-    messages: list = [{"role": "user", "content": f"Design this: {request}"}]
+    effort = "medium" if stage == "structure" else "high"
+    messages: list = [{"role": "user", "content": _stage_request(request, site, stage, base_script)}]
     problems: List[str] = []
     for attempt in range(1, max_attempts + 1):
-        response = _ask_friendly(client, model, messages)
+        response = _ask_friendly(client, model, messages, effort=effort, status=status)
         if response.stop_reason == "refusal":
             raise DesignError("Claude declined to design that; try describing it differently.")
         text = "".join(block.text for block in response.content if block.type == "text")
@@ -197,9 +349,11 @@ def design(request: str, client, catalog: Optional[BlockCatalog] = None, model: 
         elif script is None:
             problems = ["Your reply had no ```python code block."]
         else:
+            if status:
+                status("checking")
             try:
                 build = run_script_isolated(script)
-                problems = validate(build, catalog)
+                problems = validate(build, catalog, site)
             except ScriptError as e:
                 problems = [f"The script failed: {e}"]
             if not problems:
@@ -207,6 +361,8 @@ def design(request: str, client, catalog: Optional[BlockCatalog] = None, model: 
         log(f"Attempt {attempt}: {len(problems)} problem(s) found; asking Claude to fix them...")
         for p in problems[:5]:
             log(f"  - {p}")
+        if status:
+            status(f"fixing {len(problems)} problem{'s' if len(problems) != 1 else ''} (try {attempt + 1})")
         messages.append({"role": "assistant", "content": response.content})
         messages.append({"role": "user", "content": "The script had these problems:\n- " + "\n- ".join(problems)
                          + "\nReply with the complete corrected script."})

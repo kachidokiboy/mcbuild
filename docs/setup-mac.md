@@ -115,8 +115,9 @@ Useful options:
    !build a cozy oak cottage with a stone chimney
    ```
 
-   Designing takes a minute or two. You'll see progress messages in chat, then the building rises
-   in front of you.
+   A progress bar appears at the top of the screen. Within seconds the site is marked on the
+   ground with yellow carpet (white for the main parts). For larger buildings the basic structure
+   goes up next, and the details are added on top once Claude has designed them.
 
 | Chat command | What it does |
 |---|---|
