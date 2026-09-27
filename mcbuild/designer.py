@@ -13,6 +13,7 @@ from . import primitives
 from .blocks import BlockCatalog, check_blocks
 from .materials import MATERIALS
 from .model import Build
+from .server import MAX_Y, MIN_Y
 from .sandbox import API_NAMES, ScriptError, run_script_isolated
 
 DEFAULT_MODEL = "claude-opus-5-5"
@@ -170,11 +171,20 @@ class SitePlan:
     depth: int   # along z (north-south); the front is at z = 0
     height: int
     parts: List[dict]
+    below: int = 6  # how deep foundations may go; less when the ground is near the bottom of the world
 
     def box(self):
         """The volume every pass must stay inside, in design coordinates."""
         m = SITE_MARGIN
-        return (-m, -6, -m), (self.width - 1 + m, self.height + 12, self.depth - 1 + m)
+        return (-m, -self.below, -m), (self.width - 1 + m, self.height + 12, self.depth - 1 + m)
+
+    def fit_to_ground(self, ground_y: int) -> None:
+        """Limit foundations to the room between the ground and the bottom of the world."""
+        self.below = max(0, min(6, ground_y - MIN_Y))
+        top = ground_y + self.height + 12
+        if top > MAX_Y:
+            raise DesignError(f"a {self.height}-block-tall building doesn't fit under the height limit here; "
+                              "try from lower ground")
 
     @property
     def small(self) -> bool:

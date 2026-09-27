@@ -173,6 +173,7 @@ def _staged_build(request, server, target, bar, client, catalog, history, opts, 
         + ", ".join(p["name"] for p in site.parts))
 
     placement = placement_for(server, *site.box(), opts, log)
+    site.fit_to_ground(placement.offset[1])  # the offset's y is the ground level
     world_box = placement.apply(_box_build(*site.box()))
     builder = SiteBuilder(server, history, *world_box.bounds(), name=site.name, rate=opts.rate,
                           backup=opts.backup, log=log)

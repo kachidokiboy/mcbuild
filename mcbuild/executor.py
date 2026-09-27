@@ -24,6 +24,17 @@ def _backup_box(entry: HistoryEntry):
     return bmin, tuple(bmin[i] + size[i] for i in range(3))
 
 
+def trim_below_world(build: Build, progress: Progress = print) -> Build:
+    """Drop blocks below the bottom of the world (deep foundations when building near it)."""
+    below = [p for p in build.blocks if p[1] < MIN_Y]
+    if not below:
+        return build
+    progress(f"Skipping {len(below)} foundation blocks below the bottom of the world")
+    trimmed = Build(build.name)
+    trimmed.blocks = {p: b for p, b in build.blocks.items() if p[1] >= MIN_Y}
+    return trimmed
+
+
 def check_placeable(build: Build) -> None:
     (x1, y1, z1), (x2, y2, z2) = build.bounds()
     if y1 < MIN_Y or y2 > MAX_Y:
@@ -42,6 +53,7 @@ def place_build(
     max_errors: int = 10,
 ) -> HistoryEntry:
     """Place `build` (already in world coordinates). Returns the history entry for undo."""
+    build = trim_below_world(build, progress)
     check_placeable(build)
     pmin, pmax = build.bounds()
     entry = HistoryEntry(

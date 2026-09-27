@@ -211,9 +211,9 @@ def _site(name, width, depth, height, parts=()):
                                      "parts": list(parts)}) + "\n```"
 
 
-def _run_ai_build(tmp_path, monkeypatch, replies, request="a tiny tower"):
+def _run_ai_build(tmp_path, monkeypatch, replies, request="a tiny tower", player_y=64.0):
     monkeypatch.chdir(tmp_path)
-    game = FakeMinecraft(players={"Chris": ((0.5, 64.0, 0.5), (0.0, 0.0))})  # facing south
+    game = FakeMinecraft(players={"Chris": ((0.5, player_y, 0.5), (0.0, 0.0))})  # facing south
     srv = FakeRconServer(game, password="pw")
 
     def connect():
@@ -440,3 +440,30 @@ def test_progress_bar_text():
     bar.designed()
     bar.done_building()
     assert bar.text() == "mcbuild"
+
+
+def test_superflat_world_near_the_bottom(tmp_path, monkeypatch):
+    """In a superflat world the ground is at y=-60, only 4 blocks above the bottom of the world."""
+    deep = GOOD_SCRIPT + "\nbox(b, (0, -6, 0), (4, -1, 4), 'stone_bricks')"
+    shallow = GOOD_SCRIPT + "\nbox(b, (0, -4, 0), (4, -1, 4), 'stone_bricks')"
+    game, claude, entry = _run_ai_build(tmp_path, monkeypatch, [_site("Tiny Tower", 5, 5, 8), code(deep),
+                                                                code(shallow)], player_y=-60.0)
+    assert entry.min[1] == -64
+    fix_request = claude.requests[2]["messages"][-1]["content"]
+    assert "outside the site" in fix_request and "y in -4.." in fix_request
+    bottom = [p for p, blk in game.world.items() if p[1] == -64 and blk == "minecraft:stone_bricks"]
+    assert len(bottom) == 25  # the 5x5 foundation reaches the bottom layer of the world
+
+
+def test_rebuild_skips_blocks_below_the_world(tmp_path):
+    from mcbuild.executor import place_build
+    from mcbuild.model import Build
+    from mcbuild.server import MinecraftServer
+
+    game = FakeMinecraft()
+    b = Build("deep")
+    b.fill((0, -66, 0), (2, -60, 2), "stone_bricks")
+    logs = []
+    place_build(MinecraftServer(game), b, History(str(tmp_path / "h.json")), rate=0, progress=logs.append)
+    assert any("below the bottom of the world" in m for m in logs)
+    assert game.block((1, -64, 1)) == "minecraft:stone_bricks"
