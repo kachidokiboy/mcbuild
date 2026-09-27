@@ -34,8 +34,10 @@ prompt ──► Claude writes a build script ──► run it ──► voxel m
                                     RCON: bottom-up animated /setblock
 ```
 
-- **Game bridge:** the official Minecraft server with RCON enabled. mcbuild sends `/setblock` commands
-  at a steady rate, so the build rises layer by layer. No mods or plugins are needed.
+- **Game bridge:** the official Minecraft server with RCON enabled. No mods or plugins are needed.
+- **Fast placement:** within each layer, rectangles of the same block are placed with one `/fill`
+  and the rest with `/setblock`, at a steady pace, so the build still rises layer by layer. A
+  castle-sized build of about 55,000 blocks takes about 30 seconds instead of 3 minutes.
 - **Build order:** structural blocks go bottom-up in a sweeping pattern. Blocks that need support
   (doors, torches, lanterns and so on) go last.
 - **Undo:** before building, the area is copied with `/clone` to a backup slot far away in the same
@@ -82,7 +84,8 @@ turns them, including every stair, door and pane, so the front faces you.
 1. ✅ **Plumbing:** server setup, RCON, animated placement, undo
 2. ✅ **Building library:** shapes, roofs, battlements, doors, windows, arches, stairs, towers, rotation
 3. ✅ **AI builds from in-game chat:** `!build ...` in Minecraft, with checks and automatic fixes
-4. **Castle scale:** gatehouses, curtain walls, ground leveling, faster placement with `/fill`
+4. **Castle scale:** ✅ faster placement with `/fill`; next: uneven ground, `!edit`, gatehouses and
+   curtain walls
 5. **Extras:** image-based self-review, style presets, glass-outline preview
 
 ## Development

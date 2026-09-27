@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
-from typing import Callable, List
+from typing import Callable
 
 from .history import MAX_FOOTPRINT, History, HistoryEntry, backup_origin
 from .model import Build
-from .sequence import build_order
-from .server import MAX_Y, MIN_Y, CommandError, MinecraftServer
+from . import placer
+from .server import MAX_Y, MIN_Y, MinecraftServer
 
 Progress = Callable[[str], None]
 
@@ -78,35 +78,23 @@ def place_build(
     # Record before placing, so an interrupted build can still be undone.
     history.add(entry)
 
-    order = build_order(build)
-    total = len(order)
+    total = len(build)
     layers = pmax[1] - pmin[1] + 1
     progress(f"Placing {total} blocks ({layers} layers) at ~{rate:g} blocks/s")
     server.tell(f"Building '{build.name}' ({total} blocks)...")
 
-    errors: List[CommandError] = []
-    interval = 1.0 / rate if rate > 0 else 0.0
+    reported = [-1]
+
+    def report(percent: int) -> None:
+        if percent // 10 != reported[0]:
+            reported[0] = percent // 10
+            progress(f"  {percent:3d}%")
+
     start = time.monotonic()
-    last_report = -1
-    for i, (pos, block) in enumerate(order):
-        try:
-            server.setblock(pos, block)
-        except CommandError as e:
-            errors.append(e)
-            progress(f"  ! {e}")
-            if len(errors) >= max_errors:
-                raise BuildAborted(f"Too many failed commands ({len(errors)}); stopping. Run `mcbuild undo` to revert.")
-        percent = (i + 1) * 100 // total
-        if percent // 10 != last_report:
-            last_report = percent // 10
-            progress(f"  {percent:3d}%  ({i + 1}/{total})")
-        if interval:
-            delay = start + (i + 1) * interval - time.monotonic()
-            if delay > 0:
-                time.sleep(delay)
+    errors = placer.place(server, build, rate=rate, progress=report, log=progress, max_errors=max_errors)
 
     elapsed = time.monotonic() - start
-    progress(f"Done in {elapsed:.1f}s" + (f" with {len(errors)} failed blocks" if errors else ""))
+    progress(f"Done in {elapsed:.1f}s" + (f" with {errors} failed blocks" if errors else ""))
     server.tell(f"Finished '{build.name}'. Use `mcbuild undo` to remove it.")
     return entry
 

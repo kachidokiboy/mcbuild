@@ -141,6 +141,15 @@ class MinecraftServer:
             return
         raise CommandError(command, response)
 
+    def fill(self, p1: Pos, p2: Pos, block: str) -> None:
+        """Fill a box (at most CLONE_BLOCK_LIMIT blocks) with one block."""
+        command = "fill {} {} {} {} {} {} {}".format(*p1, *p2, block)
+        response = self.run(command)
+        # "No blocks were filled" means they were already that block.
+        if "filled" in response.lower() and not _looks_like_error(response):
+            return
+        raise CommandError(command, response)
+
     def forceload(self, pmin: Pos, pmax: Pos, add: bool = True) -> None:
         """Force-load (or release) all chunks covering a box, in batches under the per-command cap."""
         cx1, cx2 = pmin[0] >> 4, pmax[0] >> 4
