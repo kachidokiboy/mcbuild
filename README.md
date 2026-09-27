@@ -4,8 +4,9 @@ Minecraft AI Building Builder: describe a building, and an AI designs it and bui
 in your Minecraft world while you watch. It's built for Minecraft **Java Edition** in **Creative** and
 targets anything from a cottage up to a castle.
 
-> **Status: milestone 3 (AI builds from chat).** Type `!build a cozy oak cottage` in Minecraft chat, and
-> Claude designs the building and mcbuild builds it in front of you.
+> **Status:** type `!build a cozy oak cottage` (or a castle) in Minecraft chat. Claude plans the site,
+> you confirm with `!go`, and the building goes up in front of you, structure first and then details.
+> `!edit` changes it, `!undo` reverts it.
 
 ## Quick start (Mac)
 
@@ -56,6 +57,10 @@ prompt ──► Claude writes a build script ──► run it ──► voxel m
   finally the detailed design, written while the structure goes up. Each pass places only what
   changed and restores the original ground where a block is no longer needed; a pass that changes
   most of the design clears the site and rebuilds. Small buildings skip the structure pass.
+- **Self-review:** before the final design (or an edit) is built, mcbuild draws a front view, a
+  back view and a top-down plan of it (`mcbuild/render.py`) and shows them to Claude, which either
+  confirms it or sends a corrected script. If the correction can't be made valid, the original is
+  kept. `mcbuild listen --no-review` skips this.
 - **Preview and confirm:** after the quick site plan, the site is outlined with carpet and glass
   corner posts at full height, and nothing more happens until you type `!go` (or `!cancel`,
   which puts the site back). `mcbuild listen --no-confirm` skips this.
@@ -97,7 +102,7 @@ turns them, including every stair, door and pane, so the front faces you.
 3. ✅ **AI builds from in-game chat:** `!build ...` in Minecraft, with checks and automatic fixes
 4. ✅ **Castle scale:** faster placement with `/fill`, uneven ground, `!edit`, castle parts (gatehouse,
    curtain walls, spiral stairs, bridges, moats)
-5. **Extras:** ✅ preview and confirm; next: image-based self-review, style presets
+5. **Extras:** ✅ preview and confirm, ✅ self-review with pictures; ideas: style presets, multiplayer queue
 
 ## Development
 

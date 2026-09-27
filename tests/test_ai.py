@@ -96,16 +96,25 @@ def test_block_catalog_checks():
 class FakeClaude:
     """Stands in for anthropic.Anthropic: streams queued replies and records requests."""
 
-    def __init__(self, replies):
+    def __init__(self, replies, auto_review=True):
         self.replies = list(replies)
         self.requests = []
         self.messages = SimpleNamespace(stream=self._stream)
         self._lock = threading.Lock()
+        self.auto_review = auto_review  # answer picture reviews with LOOKS GOOD without a queued reply
+
+    @staticmethod
+    def is_review(messages):
+        content = messages[-1]["content"]
+        return isinstance(content, list) and any(part.get("type") == "image" for part in content)
 
     def _stream(self, **kwargs):
         with self._lock:
             self.requests.append({**kwargs, "messages": list(kwargs["messages"])})
-            reply = self.replies.pop(0)
+            if self.auto_review and self.is_review(kwargs["messages"]):
+                reply = "LOOKS GOOD"
+            else:
+                reply = self.replies.pop(0)
         stop, text = reply if isinstance(reply, tuple) else ("end_turn", reply)
         message = SimpleNamespace(stop_reason=stop, content=[SimpleNamespace(type="text", text=text)])
         events = [SimpleNamespace(type="content_block_start", content_block=SimpleNamespace(type="thinking")),
@@ -234,7 +243,8 @@ def _run_ai_build(tmp_path, monkeypatch, replies, request="a tiny tower", player
 
 def test_ai_build_small_building_skips_structure_pass(tmp_path, monkeypatch):
     game, claude, entry = _run_ai_build(tmp_path, monkeypatch, [_site("Tiny Tower", 5, 5, 8), code(GOOD_SCRIPT)])
-    assert len(claude.requests) == 2  # site plan, then the full design
+    assert len(claude.requests) == 3  # site plan, the full design, then its picture review
+    assert FakeClaude.is_review(claude.requests[2]["messages"])
     assert claude.requests[0]["extra_body"]["output_config"]["effort"] == "low"
     assert "PASS 1 OF 3" in claude.requests[0]["messages"][0]["content"]
     assert entry.name == "Tiny Tower"
@@ -267,8 +277,8 @@ def test_ai_build_three_passes_removes_unused_blocks(tmp_path, monkeypatch):
     replies = [_site("Big Hall", 30, 22, 7, [{"name": "Hall", "x1": 0, "z1": 0, "x2": 29, "z2": 21}]),
                code(STRUCTURE), code(DETAIL)]
     game, claude, entry = _run_ai_build(tmp_path, monkeypatch, replies, "a big hall")
-    assert len(claude.requests) == 3
-    structure_req, detail_req = (r["messages"][0]["content"] for r in claude.requests[1:])
+    assert len(claude.requests) == 4  # site, structure, details, picture review of the details
+    structure_req, detail_req = (r["messages"][0]["content"] for r in claude.requests[1:3])
     assert "PASS 2 OF 3" in structure_req and "PASS 3 OF 3" in detail_req and "walls(b" in detail_req
 
     final = run_script(DETAIL)
@@ -718,3 +728,51 @@ def test_go_at_preview_builds_and_removes_the_markers(tmp_path, monkeypatch):
     assert entry.name == "Big Hall"
     assert not [p for p, b in game.world.items() if "carpet" in b or "stained_glass" in b]
     assert len([p for p, b in game.world.items() if "glass_pane" in b]) == 6
+
+
+
+# --- self-review with pictures --------------------------------------------------------------
+
+def test_render_draws_views_of_a_design():
+    from PIL import Image
+    import io
+    from mcbuild.gallery import sample
+    from mcbuild.render import colour, review_images
+    images = review_images(sample("castle-gate"))
+    assert [c.split(" ")[0] for c, _ in images] == ["Front", "Back", "Top-down"]
+    for _, png in images:
+        img = Image.open(io.BytesIO(png))
+        assert img.width > 100 and img.height > 50
+        assert len(img.getcolors(1 << 20)) > 5  # actually drew something
+    assert colour("minecraft:water") == (60, 100, 220)
+    assert colour("minecraft:spruce_door[half=lower]") != colour("minecraft:spruce_planks")
+
+
+def test_review_accepts_or_improves_the_design():
+    better = GOOD_SCRIPT + "\nb.set(0, 7, 0, 'oak_planks')"
+    claude = FakeClaude([code(GOOD_SCRIPT), code(better)], auto_review=False)
+    d = design("a tiny tower", claude, CATALOG, log=lambda m: None, review=True)
+    assert (0, 7, 0) in d.build.blocks  # the improved script was used
+    review_request = claude.requests[1]["messages"][-1]["content"]
+    assert sum(part["type"] == "image" for part in review_request) == 3
+    assert "a tiny tower" in review_request[-1]["text"]
+
+    claude = FakeClaude([code(GOOD_SCRIPT), "LOOKS GOOD"], auto_review=False)
+    d = design("a tiny tower", claude, CATALOG, log=lambda m: None, review=True)
+    assert len(claude.requests) == 2 and d.script.strip() == GOOD_SCRIPT.strip()
+
+
+def test_broken_review_fix_keeps_the_original():
+    claude = FakeClaude([code(GOOD_SCRIPT), code("walls(b)"), code("walls(b)"), code("walls(b)")],
+                        auto_review=False)
+    d = design("a tiny tower", claude, CATALOG, log=lambda m: None, review=True)
+    assert d.script.strip() == GOOD_SCRIPT.strip()
+    assert len(claude.requests) == 4  # design, review, then two tries to fix the review's script
+
+
+def test_structure_pass_is_not_reviewed():
+    from mcbuild.designer import parse_site_plan
+    site = parse_site_plan('{"name": "A", "width": 30, "depth": 22, "height": 8}')
+    claude = FakeClaude([code(STRUCTURE)], auto_review=False)
+    design("a hall", claude, CATALOG, site=site, stage="structure", log=lambda m: None, review=True)
+    assert len(claude.requests) == 1

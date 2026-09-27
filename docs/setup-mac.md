@@ -121,7 +121,12 @@ Useful options:
    step has been paid for at that point. After `!go`, larger buildings get their basic structure
    first, and the details are added on top once Claude has designed them.
 
-   To skip the preview, start the listener with `mcbuild listen --no-confirm`.
+   To skip the preview, start the listener with `mcbuild listen --no-confirm`. Before the final
+   design is built, Claude also checks pictures of it and fixes what looks wrong; add `--no-review`
+   to skip that step and save a little.
+
+   After this update, run `pip install -e .` once to install the Pillow imaging library that draws
+   those pictures.
 
 | Chat command | What it does |
 |---|---|
