@@ -45,6 +45,13 @@ prompt ──► Claude writes a build script ──► run it ──► voxel m
   pass. The script runs in a separate, locked-down process: no imports, no files, a time limit.
   Every block is checked against the list of valid blocks exported from your own server, and any
   problems go back to Claude to fix, up to 3 attempts.
+- **Three passes:** Claude first plans the site (size and layout), which is marked on the ground
+  within seconds. Then it writes the basic structure, which starts building right away, and
+  finally the detailed design, written while the structure goes up. Each pass places only what
+  changed and restores the original ground where a block is no longer needed; a pass that changes
+  most of the design clears the site and rebuilds. Small buildings skip the structure pass.
+- **Progress bar:** a bar at the top of the screen shows what's happening: planning, which part
+  Claude is writing, build percentage, and fixes.
 - **Chat commands:** `mcbuild listen` watches the server log for `!build <description>`,
   `!designs`, `!rebuild <number or name>`, `!undo` and `!help`, and replies in chat.
 - **Saved designs:** every design is saved automatically as a numbered script in

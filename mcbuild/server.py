@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from typing import Iterator, List, Optional, Protocol, Tuple
 
@@ -75,9 +76,12 @@ def split_box(pmin: Pos, pmax: Pos, limit: int = CLONE_BLOCK_LIMIT) -> Iterator[
 class MinecraftServer:
     def __init__(self, conn: CommandConnection):
         self.conn = conn
+        # Designing and building can overlap in different threads; one RCON exchange at a time.
+        self._lock = threading.RLock()
 
     def run(self, command: str) -> str:
-        return self.conn.command(command)
+        with self._lock:
+            return self.conn.command(command)
 
     # --- players -----------------------------------------------------------------------
 
@@ -110,6 +114,22 @@ class MinecraftServer:
     def tell(self, message: str, target: str = "@a") -> None:
         component = {"text": "[mcbuild] ", "color": "gold", "extra": [{"text": message, "color": "white"}]}
         self.run(f"tellraw {target} " + json.dumps(component))
+
+    # --- boss bar (the progress bar at the top of the screen) ----------------------------------
+
+    def bossbar_show(self, bar_id: str, text: str, players: str) -> None:
+        self.run(f"bossbar remove {bar_id}")  # a stale bar from an interrupted build
+        self.run(f"bossbar add {bar_id} " + json.dumps({"text": text}))
+        self.run(f"bossbar set {bar_id} color yellow")
+        self.run(f"bossbar set {bar_id} max 100")
+        self.run(f"bossbar set {bar_id} players {players}")
+
+    def bossbar_update(self, bar_id: str, text: str, value: int) -> None:
+        self.run(f"bossbar set {bar_id} name " + json.dumps({"text": text}))
+        self.run(f"bossbar set {bar_id} value {max(0, min(100, int(value)))}")
+
+    def bossbar_hide(self, bar_id: str) -> None:
+        self.run(f"bossbar remove {bar_id}")
 
     # --- blocks --------------------------------------------------------------------------
 
