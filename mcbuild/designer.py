@@ -84,8 +84,8 @@ Minecraft Java Edition world (creative mode), one by one, while they watch.
 - x = east, y = up, z = south. Blocks are placed relative to your design; mcbuild moves it in
   front of the player afterwards, so use small coordinates near (0, 0, 0).
 - y = 0 is the first layer above the ground. Use y = -1 for foundations and ground floors (they
-  replace the grass). The ground may be slightly uneven, so a 1-3 block foundation below y = 0
-  is a good idea for larger builds.
+  replace the grass). mcbuild levels the site before building: everything above y = 0 is cleared
+  and dips below it are filled, so you can design for flat ground.
 - The FRONT of the design (main entrance, the side the player sees) must face NORTH (-z, the
   smallest z). mcbuild rotates the design so the front faces the player.
 - Size limits: at most {MAX_FOOTPRINT}x{MAX_FOOTPRINT} blocks across and {MAX_HEIGHT} tall. Typical sizes: a house 9-15
@@ -178,9 +178,11 @@ class SitePlan:
         m = SITE_MARGIN
         return (-m, -self.below, -m), (self.width - 1 + m, self.height + 12, self.depth - 1 + m)
 
-    def fit_to_ground(self, ground_y: int) -> None:
-        """Limit foundations to the room between the ground and the bottom of the world."""
-        self.below = max(0, min(6, ground_y - MIN_Y))
+    def fit_to_ground(self, ground_y: int, lowest_y: Optional[int] = None) -> None:
+        """Reach down far enough to fill the lowest dip in the ground (up to 16 blocks), but never
+        below the bottom of the world."""
+        depth = 6 if lowest_y is None else max(6, min(16, ground_y - lowest_y + 1))
+        self.below = max(0, min(depth, ground_y - MIN_Y))
         top = ground_y + self.height + 12
         if top > MAX_Y:
             raise DesignError(f"a {self.height}-block-tall building doesn't fit under the height limit here; "

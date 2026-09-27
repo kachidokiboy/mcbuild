@@ -213,7 +213,8 @@ def _site(name, width, depth, height, parts=()):
 
 def _run_ai_build(tmp_path, monkeypatch, replies, request="a tiny tower", player_y=64.0):
     monkeypatch.chdir(tmp_path)
-    game = FakeMinecraft(players={"Chris": ((0.5, player_y, 0.5), (0.0, 0.0))})  # facing south
+    game = FakeMinecraft(players={"Chris": ((0.5, player_y, 0.5), (0.0, 0.0))},  # facing south
+                         ground_y=int(player_y))
     srv = FakeRconServer(game, password="pw")
 
     def connect():
@@ -467,3 +468,89 @@ def test_rebuild_skips_blocks_below_the_world(tmp_path):
     place_build(MinecraftServer(game), b, History(str(tmp_path / "h.json")), rate=0, progress=logs.append)
     assert any("below the bottom of the world" in m for m in logs)
     assert game.block((1, -64, 1)) == "minecraft:stone_bricks"
+
+
+# --- uneven ground --------------------------------------------------------------------------
+
+def _hilly(game):
+    """A hill in the east of the site, a pond in the west and a tree in the middle."""
+    for x in range(6, 16):
+        for z in range(4, 30):
+            for y in range(64, 64 + min(6, x - 5)):
+                game.world[(x, y, z)] = "minecraft:stone"
+    for x in range(-14, -6):
+        for z in range(6, 14):
+            game.world[(x, 63, z)] = "minecraft:water"
+            game.world[(x, 62, z)] = "minecraft:water"
+    for y in range(64, 70):
+        game.world[(0, y, 18)] = "minecraft:oak_log"
+    for dx in (-1, 0, 1):
+        for dz in (-1, 0, 1):
+            game.world[(dx, 70, 18 + dz)] = "minecraft:oak_leaves"
+
+
+def test_survey_reads_heights_ignoring_leaves():
+    from mcbuild.server import MinecraftServer
+    from mcbuild.terrain import survey
+    game = FakeMinecraft()
+    _hilly(game)
+    s = survey(MinecraftServer(game), -16, 0, 16, 32)
+    assert s.heights[(10, 10)] == 69 and s.heights[(0, 18)] == 70  # hill top; the trunk, not the leaves
+    assert s.ground == 64 and s.highest == 70
+    assert s.lowest == 62  # the bottom of the pond, seen through the water
+    assert not game.entities  # the probe marker was removed
+
+
+def test_build_on_uneven_ground_levels_it_and_undo_restores_it(tmp_path, monkeypatch):
+    from mcbuild.executor import undo_last
+    from mcbuild.server import MinecraftServer
+    monkeypatch.chdir(tmp_path)
+    game = FakeMinecraft(players={"Chris": ((0.5, 64.0, 0.5), (0.0, 0.0))})  # facing south
+    _hilly(game)
+    original = dict(game.world)
+    srv = FakeRconServer(game, password="pw")
+
+    def connect():
+        client = RconClient("127.0.0.1", srv.port, "pw")
+        client.connect()
+        return client
+
+    replies = [_site("Big Hall", 30, 22, 7), code(STRUCTURE + "\nb.set(15, 3, 15, 'oak_planks')"), code(DETAIL)]
+    try:
+        history = History("h.json")
+        entry = ai_build("a big hall", connect, FakeClaude(replies), CATALOG, history,
+                         PlaceOptions(player="Chris", rate=0), log=lambda m: None)
+        (x1, y1, z1), (x2, y2, z2) = entry.min, entry.max
+        assert y1 < 64 <= y2
+        inside = lambda p: x1 <= p[0] <= x2 and z1 <= p[2] <= z2  # noqa: E731
+        # The hill and the tree are gone from the site, the pond is filled with ground.
+        assert not [p for p, b in game.world.items() if inside(p) and b in ("minecraft:stone", "minecraft:oak_log",
+                                                                             "minecraft:oak_leaves") and p[1] >= 64]
+        assert not [p for p, b in game.world.items() if inside(p) and b == "minecraft:water"]
+        assert all(game.block((x, 63, z)) != "minecraft:air" for x in range(x1, x2 + 1) for z in range(z1, z2 + 1))
+        # The block pass 3 dropped went back to the prepared ground (air), not to the old hill.
+        dropped = [p for p, b in game.world.items() if b == "minecraft:oak_planks" and p[1] == 67]
+        assert not dropped
+        assert not game.entities and not game.forceloaded
+        undo_last(MinecraftServer(game), history, progress=lambda m: None)
+    finally:
+        srv.close()
+    assert all(game.block(p) == b for p, b in original.items())  # hill, pond and tree are back
+
+
+def test_rebuild_on_a_hill_levels_the_ground(tmp_path):
+    from mcbuild.executor import undo_last
+    from mcbuild.gallery import sample
+    from mcbuild.pipeline import place_in_front
+    from mcbuild.server import MinecraftServer
+    game = FakeMinecraft(players={"Chris": ((0.5, 64.0, 0.5), (0.0, 0.0))})
+    _hilly(game)
+    original = dict(game.world)
+    server, history = MinecraftServer(game), History(str(tmp_path / "h.json"))
+    entry = place_in_front(server, sample("cottage"), history, PlaceOptions(player="Chris", rate=0), log=lambda m: None)
+    (x1, _, z1), (x2, _, z2) = entry.min, entry.max
+    assert not [p for p, b in game.world.items()
+                if x1 <= p[0] <= x2 and z1 <= p[2] <= z2 and b in ("minecraft:stone", "minecraft:oak_log")]
+    assert not game.forceloaded and not game.entities
+    undo_last(server, history, progress=lambda m: None)
+    assert all(game.block(p) == b for p, b in original.items())
