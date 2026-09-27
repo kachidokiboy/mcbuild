@@ -56,6 +56,9 @@ prompt ──► Claude writes a build script ──► run it ──► voxel m
   finally the detailed design, written while the structure goes up. Each pass places only what
   changed and restores the original ground where a block is no longer needed; a pass that changes
   most of the design clears the site and rebuilds. Small buildings skip the structure pass.
+- **Preview and confirm:** after the quick site plan, the site is outlined with carpet and glass
+  corner posts at full height, and nothing more happens until you type `!go` (or `!cancel`,
+  which puts the site back). `mcbuild listen --no-confirm` skips this.
 - **Progress bar:** a bar at the top of the screen shows what's happening: planning, which part
   Claude is writing, build percentage, and fixes.
 - **Chat commands:** `mcbuild listen` watches the server log for `!build <description>`,
@@ -94,7 +97,7 @@ turns them, including every stair, door and pane, so the front faces you.
 3. ✅ **AI builds from in-game chat:** `!build ...` in Minecraft, with checks and automatic fixes
 4. ✅ **Castle scale:** faster placement with `/fill`, uneven ground, `!edit`, castle parts (gatehouse,
    curtain walls, spiral stairs, bridges, moats)
-5. **Extras:** preview and confirm before the detailed design, image-based self-review, style presets
+5. **Extras:** ✅ preview and confirm; next: image-based self-review, style presets
 
 ## Development
 

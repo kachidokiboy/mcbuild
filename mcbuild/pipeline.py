@@ -11,7 +11,7 @@ from typing import Callable, ContextManager, Iterator, List, Optional, Tuple
 
 from .blocks import check_blocks
 from .config import DESIGNS_DIR
-from .designer import Design, DesignError, design, edit_design, plan_site
+from .designer import Design, DesignError, SitePlan, design, edit_design, plan_site
 from .executor import place_build, undo_last
 from .history import History, HistoryEntry
 from .model import Build, Pos
@@ -165,8 +165,15 @@ def placement_for(server: MinecraftServer, box_min: Pos, box_max: Pos, opts: Pla
     return Placement(turns, offset_in_front(box.rotated(turns), origin, facing, opts.distance))
 
 
+class Cancelled(Exception):
+    """The player cancelled the build at the preview."""
+
+
+Confirm = Callable[[SitePlan], bool]
+
+
 def ai_build(request: str, connect: Connect, client, catalog, history: History, opts: PlaceOptions,
-             log: Log = print) -> HistoryEntry:
+             log: Log = print, confirm: Optional[Confirm] = None) -> HistoryEntry:
     """Design `request` with Claude in three passes and build each as it's ready, with a progress
     bar at the top of the player's screen:
 
@@ -174,20 +181,21 @@ def ai_build(request: str, connect: Connect, client, catalog, history: History, 
     2. structure: walls, floors, roofs and towers, built while pass 3 is being designed
     3. details: the final design; only changed blocks are placed, and removed ones restored
 
-    Small buildings skip pass 2."""
+    Small buildings skip pass 2. With `confirm`, the player sees the marked site first and the
+    detailed design only starts if confirm(site) returns True."""
     with _server(connect) as server:
         player = opts.player if opts.at else server.resolve_player(opts.player)
         target = player or "@a"
         server.tell(f"Designing \"{request}\"...", target)
         with ProgressBar(server, target, log) as bar:
             try:
-                return _staged_build(request, server, target, bar, client, catalog, history, opts, log)
+                return _staged_build(request, server, target, bar, client, catalog, history, opts, log, confirm)
             except DesignError as e:
                 server.tell(f"Sorry, that didn't work: {e}", target)
                 raise
 
 
-def _staged_build(request, server, target, bar, client, catalog, history, opts, log) -> HistoryEntry:
+def _staged_build(request, server, target, bar, client, catalog, history, opts, log, confirm=None) -> HistoryEntry:
     bar.designing("Planning the site")
     site = plan_site(request, client, status=bar.note, log=log)
     bar.designed()
@@ -199,7 +207,7 @@ def _staged_build(request, server, target, bar, client, catalog, history, opts, 
     server.forceload((x1, 0, z1), (x2, 0, z2), add=True)  # keep the whole site loaded while we work
     try:
         return _build_on_site(request, site, placement, (x1, z1, x2, z2), server, target, bar, client, catalog,
-                              history, opts, log)
+                              history, opts, log, confirm)
     finally:
         server.forceload((x1, 0, z1), (x2, 0, z2), add=False)
 
@@ -222,7 +230,7 @@ def _survey_ground(server, area, opts, bar, log) -> Tuple[Optional[int], Optiona
 
 
 def _build_on_site(request, site, placement, area, server, target, bar, client, catalog, history, opts,
-                   log) -> HistoryEntry:
+                   log, confirm=None) -> HistoryEntry:
     ground, lowest = _survey_ground(server, area, opts, bar, log)
     if ground is not None:
         placement = Placement(placement.turns, (placement.offset[0], ground, placement.offset[2]))
@@ -244,7 +252,20 @@ def _build_on_site(request, site, placement, area, server, target, bar, client, 
         bar.building("Marking the site")
         builder.apply(placement.apply(site.outline()), bar.built)
         bar.done_building()
-        server.tell(f"Planned {site.name} ({site.width}x{site.depth}); the site is marked.", target)
+        if confirm is None:
+            server.tell(f"Planned {site.name} ({site.width}x{site.depth}); the site is marked.", target)
+        else:
+            server.tell(f"Planned {site.name}: {site.width}x{site.depth}, {site.height} tall (see the markers and "
+                        "corner posts). Type !go to build it, or !cancel.", target)
+            bar.designing("Waiting for !go")
+            bar.note("type !go or !cancel")
+            go = confirm(site)
+            bar.designed()
+            if not go:
+                builder.abandon()
+                undo_last(server, history, progress=log)
+                server.tell("Cancelled; the site is back the way it was.", target)
+                raise Cancelled(f"{site.name} was cancelled")
 
         structure: Optional[Design] = None
         if not site.small:

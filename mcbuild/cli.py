@@ -15,9 +15,9 @@ from .designer import DesignError, design
 from .executor import BuildAborted
 from .gallery import SAMPLES, gallery, sample
 from .history import History
-from .listen import HELP, follow, parse_chat, parse_command
+from .listen import HELP, ChatInbox, follow
 from .model import Build
-from .pipeline import (PlaceOptions, ai_build, edit_last, find_design, list_designs, load_design,
+from .pipeline import (Cancelled, PlaceOptions, ai_build, edit_last, find_design, list_designs, load_design,
                        place_in_front, save_design, undo)
 from .rcon import RconClient, RconError
 from .sandbox import ScriptError
@@ -133,40 +133,14 @@ def cmd_listen(args) -> None:
     with connect() as rcon:
         MinecraftServer(rcon).tell("mcbuild is listening. " + HELP)
     print(f"Listening for !build commands in Minecraft chat (watching {log_path}). Press Ctrl+C to stop.")
-    for line in follow(log_path):
-        chat = parse_chat(line)
-        command = chat and parse_command(chat[1])
-        if not command:
-            continue
-        player, (name, rest) = chat[0], command
+    inbox = ChatInbox(follow(log_path))
+    while True:
+        player, name, rest = inbox.get()
         print(f"<{player}> !{name} {rest}")
         try:
-            if name == "build" and rest:
-                opts = PlaceOptions(player=player, distance=args.distance, rate=args.rate, backup=not args.no_backup)
-                ai_build(rest, connect, client, catalog, history, opts)
-            elif name == "rebuild" and rest:
-                saved = find_design(rest)
-                build = load_design(saved.path, catalog)
-                with connect() as rcon:
-                    server = MinecraftServer(rcon)
-                    server.tell(f"Rebuilding design #{saved.number} {build.name} ({len(build)} blocks).", player)
-                    place_in_front(server, build, history, PlaceOptions(
-                        player=player, distance=args.distance, rate=args.rate, backup=not args.no_backup),
-                        design_path=saved.path)
-            elif name == "edit" and rest:
-                edit_last(rest, connect, client, catalog, history, PlaceOptions(player=player, rate=args.rate))
-            elif name == "designs":
-                with connect() as rcon:
-                    MinecraftServer(rcon).tell(_recent_designs_message(), player)
-            elif name == "undo":
-                with connect() as rcon:
-                    server = MinecraftServer(rcon)
-                    message = undo(server, history)
-                    server.tell(message + ".", player)
-                print(message)
-            else:
-                with connect() as rcon:
-                    MinecraftServer(rcon).tell(HELP, player)
+            _handle_chat(args, player, name, rest, inbox, connect, client, catalog, history)
+        except Cancelled as e:
+            print(e)
         except (RconError, CommandError, BuildAborted, DesignError, ScriptError, RuntimeError, ValueError,
                 OSError) as e:
             print(f"Error: {e}", file=sys.stderr)
@@ -175,6 +149,39 @@ def cmd_listen(args) -> None:
                     MinecraftServer(rcon).tell(f"Error: {e}", player)
             except RconError:
                 pass
+
+
+def _handle_chat(args, player, name, rest, inbox, connect, client, catalog, history) -> None:
+    opts = PlaceOptions(player=player, distance=args.distance, rate=args.rate, backup=not args.no_backup)
+    if name == "build" and rest:
+        def confirm(site) -> bool:
+            return inbox.wait_for(player, ("go", "cancel"), timeout=args.confirm_timeout) == "go"
+
+        ai_build(rest, connect, client, catalog, history, opts, confirm=None if args.no_confirm else confirm)
+    elif name == "rebuild" and rest:
+        saved = find_design(rest)
+        build = load_design(saved.path, catalog)
+        with connect() as rcon:
+            server = MinecraftServer(rcon)
+            server.tell(f"Rebuilding design #{saved.number} {build.name} ({len(build)} blocks).", player)
+            place_in_front(server, build, history, opts, design_path=saved.path)
+    elif name == "edit" and rest:
+        edit_last(rest, connect, client, catalog, history, opts)
+    elif name == "designs":
+        with connect() as rcon:
+            MinecraftServer(rcon).tell(_recent_designs_message(), player)
+    elif name == "undo":
+        with connect() as rcon:
+            server = MinecraftServer(rcon)
+            message = undo(server, history)
+            server.tell(message + ".", player)
+        print(message)
+    elif name in ("go", "cancel"):
+        with connect() as rcon:
+            MinecraftServer(rcon).tell("There's no planned build waiting; start one with !build.", player)
+    else:
+        with connect() as rcon:
+            MinecraftServer(rcon).tell(HELP, player)
 
 
 def cmd_undo(args) -> None:
@@ -246,6 +253,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--distance", type=int, default=3, help="Blocks between the player and the build")
     p.add_argument("--rate", type=float, default=300, help="Blocks per second")
     p.add_argument("--no-backup", action="store_true", help="Skip undo backups")
+    p.add_argument("--no-confirm", action="store_true",
+                   help="Don't wait for !go after the site is planned; design and build straight away")
+    p.add_argument("--confirm-timeout", type=float, default=300,
+                   help="Seconds to wait for !go before cancelling (default 300)")
     p.set_defaults(func=cmd_listen)
 
     p = sub.add_parser("build", help='Design a building with AI and build it, e.g. mcbuild build "a stone tower"')

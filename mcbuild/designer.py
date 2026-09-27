@@ -199,14 +199,18 @@ class SitePlan:
                            "height": self.height, "parts": self.parts})
 
     def outline(self) -> Build:
-        """Markers on the ground: the site's edge in yellow, each part's footprint in white."""
-        from .primitives import rect_perimeter
+        """A preview on the ground: the site's edge in yellow carpet, each part's footprint in white,
+        and glass posts at the corners as tall as the building will be."""
+        from .primitives import pillar, rect_perimeter
         b = Build(f"{self.name} (site)")
         for part in self.parts:
             for x, z in rect_perimeter((part["x1"], part["z1"]), (part["x2"], part["z2"])):
                 b.set(x, 0, z, "white_carpet")
         for x, z in rect_perimeter((0, 0), (self.width - 1, self.depth - 1)):
             b.set(x, 0, z, "yellow_carpet")
+        for x in (0, self.width - 1):
+            for z in (0, self.depth - 1):
+                pillar(b, (x, 0, z), self.height, "yellow_stained_glass")
         return b
 
 

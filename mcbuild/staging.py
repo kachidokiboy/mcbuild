@@ -117,6 +117,13 @@ class SiteBuilder:
         self.server.forceload(self._ground_min, self._to_copy(self._ground_min, self.site_max), add=True)
         self.server.clone(self.site_min, self.site_max, self._ground_min)
 
+    def abandon(self) -> None:
+        """Release everything without recording the build (after it was cancelled and undone)."""
+        self.finish()
+        self.entry = None
+        self._backup_min = self._ground_min = None
+        self._site_loaded = False
+
     def finish(self, name: Optional[str] = None) -> None:
         if self.entry:
             self.entry.name = name or self.name
