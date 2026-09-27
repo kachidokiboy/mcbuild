@@ -40,6 +40,10 @@ prompt ──► Claude writes a build script ──► run it ──► voxel m
   castle-sized build of about 55,000 blocks takes about 30 seconds instead of 3 minutes.
 - **Build order:** structural blocks go bottom-up in a sweeping pattern. Blocks that need support
   (doors, torches, lanterns and so on) go last.
+- **Uneven ground:** before building, mcbuild surveys ground heights across the site using
+  Minecraft's own height maps (leaves ignored, the bottom of ponds included) and builds at the
+  typical ground level. It clears hills, trees and plants above that level and fills dips and
+  water below it with grass, dirt and stone. Undo restores the original landscape.
 - **Undo:** before building, the area is copied with `/clone` to a backup slot far away in the same
   world. `mcbuild undo` copies it back.
 - **AI designer:** Claude writes a short Python script against the building library (walls,
@@ -84,7 +88,7 @@ turns them, including every stair, door and pane, so the front faces you.
 1. ✅ **Plumbing:** server setup, RCON, animated placement, undo
 2. ✅ **Building library:** shapes, roofs, battlements, doors, windows, arches, stairs, towers, rotation
 3. ✅ **AI builds from in-game chat:** `!build ...` in Minecraft, with checks and automatic fixes
-4. **Castle scale:** ✅ faster placement with `/fill`; next: uneven ground, `!edit`, gatehouses and
+4. **Castle scale:** ✅ faster placement with `/fill`, ✅ uneven ground; next: `!edit`, gatehouses and
    curtain walls
 5. **Extras:** image-based self-review, style presets, glass-outline preview
 

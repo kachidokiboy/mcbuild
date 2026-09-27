@@ -17,6 +17,9 @@ from .model import Build, Pos
 from . import placer
 from .server import MAX_Y, MIN_Y, MinecraftServer
 
+# The prepared-ground copy sits next to the undo backup, in the same far-away strip.
+GROUND_COPY_OFFSET = 512
+
 # Rebuild from scratch when a pass would change more than this share of the blocks.
 REBUILD_FRACTION = 0.5
 
@@ -56,6 +59,9 @@ class SiteBuilder:
         self.current: Dict[Pos, str] = {}
         self.entry: Optional[HistoryEntry] = None
         self._backup_min: Optional[Pos] = None
+        # A second copy taken after the ground is prepared: passes restore removed blocks from it,
+        # while undo still restores the original terrain from the first.
+        self._ground_min: Optional[Pos] = None
         self.errors = 0
 
     # --- lifecycle -----------------------------------------------------------------------------
@@ -76,13 +82,22 @@ class SiteBuilder:
         self.entry = entry
         return entry
 
+    def snapshot_ground(self) -> None:
+        """Remember the site as it is now (after leveling) as the ground that removed blocks go back to."""
+        if not self._backup_min:
+            return
+        self._ground_min = (self._backup_min[0], self._backup_min[1], self._backup_min[2] + GROUND_COPY_OFFSET)
+        self.server.forceload(self._ground_min, self._to_copy(self._ground_min, self.site_max), add=True)
+        self.server.clone(self.site_min, self.site_max, self._ground_min)
+
     def finish(self, name: Optional[str] = None) -> None:
         if self.entry:
             self.entry.name = name or self.name
             self.entry.blocks = len(self.current)
             self.history.save()
-        if self._backup_min:
-            self.server.forceload(self._backup_min, self._to_backup(self.site_max), add=False)
+        for copy_min in (self._backup_min, self._ground_min):
+            if copy_min:
+                self.server.forceload(copy_min, self._to_copy(copy_min, self.site_max), add=False)
 
     # --- passes --------------------------------------------------------------------------------
 
@@ -96,7 +111,8 @@ class SiteBuilder:
         changed = [(p, b) for p, b in new.items() if self.current.get(p) != b]
         if self.current and self.backup and len(changed) + len(removed) > REBUILD_FRACTION * max(len(new), 1):
             self.log("  This pass changes most of the design; clearing the site and rebuilding.")
-            self.server.clone(self._backup_min, self._to_backup(self.site_max), self.site_min)
+            ground = self._ground_min or self._backup_min
+            self.server.clone(ground, self._to_copy(ground, self.site_max), self.site_min)
             self.current, removed, changed = {}, [], list(new.items())
         self._restore(removed)
         self._place(changed, progress)
@@ -111,8 +127,9 @@ class SiteBuilder:
             for p in positions:
                 self.server.setblock(p, "minecraft:air")
             return
+        ground = self._ground_min or self._backup_min
         for start, end in _x_runs(positions):
-            self.server.clone(self._to_backup(start), self._to_backup(end), start)
+            self.server.clone(self._to_copy(ground, start), self._to_copy(ground, end), start)
 
     def _place(self, items: List[Tuple[Pos, str]], progress: Optional[Progress]) -> None:
         batch = Build()
@@ -127,4 +144,8 @@ class SiteBuilder:
 
     def _to_backup(self, p: Pos) -> Pos:
         assert self._backup_min is not None
-        return tuple(self._backup_min[i] + p[i] - self.site_min[i] for i in range(3))  # type: ignore[return-value]
+        return self._to_copy(self._backup_min, p)
+
+    def _to_copy(self, copy_min: Pos, p: Pos) -> Pos:
+        """Where site position `p` is in the copy whose corner is `copy_min`."""
+        return tuple(copy_min[i] + p[i] - self.site_min[i] for i in range(3))  # type: ignore[return-value]

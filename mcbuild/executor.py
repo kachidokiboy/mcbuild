@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Callable, Optional
 
 from .history import MAX_FOOTPRINT, History, HistoryEntry, backup_origin
 from .model import Build
@@ -51,8 +51,10 @@ def place_build(
     backup: bool = True,
     progress: Progress = print,
     max_errors: int = 10,
+    prepare: Optional[Callable[[], None]] = None,
 ) -> HistoryEntry:
-    """Place `build` (already in world coordinates). Returns the history entry for undo."""
+    """Place `build` (already in world coordinates). Returns the history entry for undo.
+    `prepare` runs after the backup and before placing (e.g. to level the ground)."""
     build = trim_below_world(build, progress)
     check_placeable(build)
     pmin, pmax = build.bounds()
@@ -77,6 +79,8 @@ def place_build(
 
     # Record before placing, so an interrupted build can still be undone.
     history.add(entry)
+    if prepare:
+        prepare()
 
     total = len(build)
     layers = pmax[1] - pmin[1] + 1

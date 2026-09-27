@@ -19,7 +19,8 @@ from .placement import offset_in_front, turns_to_face, yaw_to_direction
 from .progress import ProgressBar
 from .rcon import RconClient
 from .sandbox import ScriptError, run_script_isolated
-from .server import MinecraftServer
+from . import terrain
+from .server import CommandError, MinecraftServer
 from .staging import SiteBuilder
 
 Log = Callable[[str], None]
@@ -37,10 +38,27 @@ class PlaceOptions:
 
 def place_in_front(server: MinecraftServer, design_build: Build, history: History, opts: PlaceOptions,
                    log: Log = print) -> HistoryEntry:
-    """Place a north-fronted design in front of the player (or at opts.at), front facing them."""
+    """Place a north-fronted design in front of the player (or at opts.at), front facing them,
+    on leveled ground."""
     placement = placement_for(server, *design_build.bounds(), opts, log)
-    build = placement.apply(design_build)
-    return place_build(server, build, history, rate=opts.rate, backup=opts.backup, progress=log)
+    (x1, _, z1), (x2, _, z2) = placement.apply(design_build).bounds()
+    prepare = None
+    server.forceload((x1, 0, z1), (x2, 0, z2), add=True)
+    try:
+        ground, lowest = _survey_ground(server, (x1, z1, x2, z2), opts, None, log)
+        if ground is not None:
+            placement = Placement(placement.turns, (placement.offset[0], ground, placement.offset[2]))
+        build = placement.apply(design_build)
+        if ground is not None:
+            (_, by1, _), (_, by2, _) = build.bounds()
+            # Stay inside the area the undo backup covers.
+            depth = max(0, min(ground - by1, ground - lowest + 1, terrain.MAX_FILL_DEPTH))
+            top = max(by2, ground)
+            prepare = lambda: terrain.level(server, x1, z1, x2, z2, ground, top, depth, log)  # noqa: E731
+        return place_build(server, build, history, rate=opts.rate, backup=opts.backup, progress=log,
+                           prepare=prepare)
+    finally:
+        server.forceload((x1, 0, z1), (x2, 0, z2), add=False)
 
 
 @dataclass
@@ -173,13 +191,52 @@ def _staged_build(request, server, target, bar, client, catalog, history, opts, 
         + ", ".join(p["name"] for p in site.parts))
 
     placement = placement_for(server, *site.box(), opts, log)
-    site.fit_to_ground(placement.offset[1])  # the offset's y is the ground level
+    (x1, _, z1), (x2, _, z2) = placement.apply(_box_build(*site.box())).bounds()
+    server.forceload((x1, 0, z1), (x2, 0, z2), add=True)  # keep the whole site loaded while we work
+    try:
+        return _build_on_site(request, site, placement, (x1, z1, x2, z2), server, target, bar, client, catalog,
+                              history, opts, log)
+    finally:
+        server.forceload((x1, 0, z1), (x2, 0, z2), add=False)
+
+
+def _survey_ground(server, area, opts, bar, log) -> Tuple[Optional[int], Optional[int]]:
+    """The ground level to build on, and the lowest point of the site (None if unknown)."""
+    if bar:
+        bar.building("Surveying the ground")
+    try:
+        survey = terrain.survey(server, *area)
+    except CommandError as e:
+        log(f"Couldn't survey the ground ({e}); building at the player's level without leveling.")
+        return None, None
+    finally:
+        if bar:
+            bar.done_building()
+    log(f"Ground: {survey.describe()}")
+    ground = opts.at[1] if opts.at else survey.ground
+    return ground, survey.lowest
+
+
+def _build_on_site(request, site, placement, area, server, target, bar, client, catalog, history, opts,
+                   log) -> HistoryEntry:
+    ground, lowest = _survey_ground(server, area, opts, bar, log)
+    if ground is not None:
+        placement = Placement(placement.turns, (placement.offset[0], ground, placement.offset[2]))
+    site.fit_to_ground(placement.offset[1], lowest)
     world_box = placement.apply(_box_build(*site.box()))
     builder = SiteBuilder(server, history, *world_box.bounds(), name=site.name, rate=opts.rate,
                           backup=opts.backup, log=log)
     entry = builder.start()
     final: Optional[Design] = None
     try:
+        if ground is not None:
+            bar.building("Preparing the ground")
+            (bx1, by1, bz1), (bx2, by2, bz2) = builder.site_min, builder.site_max
+            depth = min(ground - by1, ground - lowest + 1, terrain.MAX_FILL_DEPTH)
+            terrain.level(server, bx1, bz1, bx2, bz2, ground, by2, max(0, depth), log)
+            builder.snapshot_ground()
+            bar.done_building()
+
         bar.building("Marking the site")
         builder.apply(placement.apply(site.outline()), bar.built)
         bar.done_building()

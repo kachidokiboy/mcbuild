@@ -16,7 +16,8 @@ Pos = Tuple[int, int, int]
 class FakeMinecraft:
     """Implements just enough commands, with vanilla's response wording, to exercise mcbuild."""
 
-    def __init__(self, players=None, unload_ticks: int = 1):
+    def __init__(self, players=None, unload_ticks: int = 1, ground_y: int = 64):
+        self.ground_y = ground_y
         self.world: Dict[Pos, str] = {}  # missing = grass at y<0, air otherwise
         self.players = players if players is not None else {"Steve": ((10.5, 64.0, 20.5), (0.0, 5.0))}
         self.forceloaded: Set[Tuple[int, int]] = set()
@@ -24,9 +25,10 @@ class FakeMinecraft:
         self.pending: Dict[Tuple[int, int], int] = {}
         self.unload_ticks = unload_ticks
         self.log = []
+        self.entities: Dict[str, list] = {}  # tag -> [x, y, z]
 
     def block(self, pos: Pos) -> str:
-        return self.world.get(pos, "minecraft:grass_block" if pos[1] < 64 else "minecraft:air")
+        return self.world.get(pos, "minecraft:grass_block" if pos[1] < self.ground_y else "minecraft:air")
 
     def _loaded(self, x: int, z: int) -> bool:
         chunk = (x >> 4, z >> 4)
@@ -39,10 +41,42 @@ class FakeMinecraft:
             return True
         return False
 
+    REPLACEABLE = {"minecraft:air", "minecraft:water", "minecraft:short_grass", "minecraft:tall_grass"}
+
+    def surface(self, x: int, z: int, see_through_water: bool = False) -> int:
+        """First free y above the highest motion-blocking block (leaves ignored; water counts
+        unless see_through_water, like the ocean_floor height map)."""
+        skip = {"minecraft:air", "minecraft:short_grass"} | ({"minecraft:water"} if see_through_water else set())
+        for y in range(319, -65, -1):
+            b = self.block((x, y, z))
+            if b not in skip and not b.endswith("_leaves"):
+                return y + 1
+        return -64
+
     def handle(self, cmd: str) -> str:
         self.log.append(cmd)
         parts = cmd.split()
         name = parts[0]
+        if name == "summon" and parts[1] == "minecraft:marker":
+            tag = re.search(r'Tags:\["([^"]+)"\]', cmd).group(1)
+            self.entities[tag] = [float(v) for v in parts[2:5]]
+            return "Summoned new Marker"
+        if name == "kill":
+            tag = re.search(r"tag=([a-z_]+)", cmd).group(1)
+            return "Killed 1 entity" if self.entities.pop(tag, None) else "No entity was found"
+        if name == "execute" and "positioned over" in cmd and "run tp" in cmd:
+            x, z = int(parts[2]), int(parts[4])
+            tag = re.search(r"tag=([a-z_]+)", cmd).group(1)
+            if tag not in self.entities:
+                return "No entity was found"
+            y = self.surface(x, z, see_through_water=parts[7] == "ocean_floor")
+            self.entities[tag] = [x + 0.5, float(y), z + 0.5]
+            return "Teleported Marker"
+        if name == "data" and parts[1:3] == ["get", "entity"] and parts[3].startswith("@e"):
+            tag = re.search(r"tag=([a-z_]+)", cmd).group(1)
+            if tag not in self.entities:
+                return "No entity was found"
+            return f"Marker has the following entity data: {self.entities[tag][1]}d"
         if name == "list":
             return f"There are {len(self.players)} of a max of 20 players online: " + ", ".join(self.players)
         if name == "data" and parts[1:3] == ["get", "entity"]:
@@ -74,10 +108,13 @@ class FakeMinecraft:
                 return f"Too many blocks in the specified area (maximum 32768, specified {volume})"
             if "bogus" in block:
                 return f"Unknown block type '{block}'...<--[HERE]"
+            only = self.REPLACEABLE if parts[8:10] == ["replace", "#minecraft:replaceable"] else None
             changed = 0
             for x in range(min(x1, x2), max(x1, x2) + 1):
                 for y in range(min(y1, y2), max(y1, y2) + 1):
                     for z in range(min(z1, z2), max(z1, z2) + 1):
+                        if only is not None and self.block((x, y, z)) not in only:
+                            continue
                         if self.block((x, y, z)) != block:
                             self.world[(x, y, z)] = block
                             changed += 1
