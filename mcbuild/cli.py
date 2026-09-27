@@ -12,12 +12,13 @@ from .blocks import ensure_catalog
 from .config import STATE_DIR, anthropic_client, save_api_key
 from .demo import demo_hut
 from .designer import DesignError, design
-from .executor import BuildAborted, undo_last
+from .executor import BuildAborted
 from .gallery import SAMPLES, gallery, sample
 from .history import History
 from .listen import HELP, follow, parse_chat, parse_command
 from .model import Build
-from .pipeline import PlaceOptions, ai_build, find_design, list_designs, load_design, place_in_front, save_design
+from .pipeline import (PlaceOptions, ai_build, edit_last, find_design, list_designs, load_design,
+                       place_in_front, save_design, undo)
 from .rcon import RconClient, RconError
 from .sandbox import ScriptError
 from .sequence import build_order
@@ -49,7 +50,7 @@ def _options(args) -> PlaceOptions:
                         distance=args.distance, rate=args.rate, backup=not args.no_backup)
 
 
-def _place(args, design_build: Build) -> None:
+def _place(args, design_build: Build, design_path: Optional[str] = None) -> None:
     if args.dry_run:
         order = build_order(design_build)
         print(f"{design_build.name}: {len(design_build)} blocks, bounds {design_build.bounds()}")
@@ -57,7 +58,8 @@ def _place(args, design_build: Build) -> None:
             print("setblock {} {} {} {}".format(*pos, block))
         return
     with _connect(args) as rcon:
-        entry = place_in_front(MinecraftServer(rcon), design_build, _history(), _options(args))
+        entry = place_in_front(MinecraftServer(rcon), design_build, _history(), _options(args),
+                               design_path=design_path)
     print(f"Build #{entry.id} placed at {tuple(entry.min)}..{tuple(entry.max)}")
 
 
@@ -96,7 +98,14 @@ def _resolve_design_path(query: str) -> str:
 
 def cmd_script(args) -> None:
     path = _resolve_design_path(args.design)
-    _place(args, load_design(path, ensure_catalog(args.server_dir)))
+    _place(args, load_design(path, ensure_catalog(args.server_dir)), design_path=path)
+
+
+def cmd_edit(args) -> None:
+    instruction = " ".join(args.instruction)
+    entry = edit_last(instruction, lambda: _connect(args), anthropic_client(), ensure_catalog(args.server_dir),
+                      _history(), PlaceOptions(player=args.player, rate=args.rate))
+    print(f"Edited build #{entry.id} '{entry.name}' (version {len(entry.designs)})")
 
 
 def cmd_designs(args) -> None:
@@ -142,14 +151,19 @@ def cmd_listen(args) -> None:
                     server = MinecraftServer(rcon)
                     server.tell(f"Rebuilding design #{saved.number} {build.name} ({len(build)} blocks).", player)
                     place_in_front(server, build, history, PlaceOptions(
-                        player=player, distance=args.distance, rate=args.rate, backup=not args.no_backup))
+                        player=player, distance=args.distance, rate=args.rate, backup=not args.no_backup),
+                        design_path=saved.path)
+            elif name == "edit" and rest:
+                edit_last(rest, connect, client, catalog, history, PlaceOptions(player=player, rate=args.rate))
             elif name == "designs":
                 with connect() as rcon:
                     MinecraftServer(rcon).tell(_recent_designs_message(), player)
             elif name == "undo":
                 with connect() as rcon:
-                    entry = undo_last(MinecraftServer(rcon), history)
-                print(f"Undid build #{entry.id} '{entry.name}'")
+                    server = MinecraftServer(rcon)
+                    message = undo(server, history)
+                    server.tell(message + ".", player)
+                print(message)
             else:
                 with connect() as rcon:
                     MinecraftServer(rcon).tell(HELP, player)
@@ -165,8 +179,7 @@ def cmd_listen(args) -> None:
 
 def cmd_undo(args) -> None:
     with _connect(args) as rcon:
-        entry = undo_last(MinecraftServer(rcon), _history())
-    print(f"Undid build #{entry.id} '{entry.name}'")
+        print(undo(MinecraftServer(rcon), _history()))
 
 
 def cmd_history(args) -> None:
@@ -258,7 +271,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--sample", help=f"Build just one sample: {names}")
     p.set_defaults(func=cmd_gallery)
 
-    p = sub.add_parser("undo", help="Revert the most recent build")
+    p = sub.add_parser("edit", help='Change the last build with AI, e.g. mcbuild edit "make the towers taller"')
+    add_connection(p)
+    p.add_argument("--player", help="Player to send progress messages to")
+    p.add_argument("--rate", type=float, default=300, help="Blocks per second")
+    p.add_argument("instruction", nargs="+", help="What to change")
+    p.set_defaults(func=cmd_edit)
+
+    p = sub.add_parser("undo", help="Revert the last edit, or remove the most recent build")
     add_connection(p)
     p.set_defaults(func=cmd_undo)
 

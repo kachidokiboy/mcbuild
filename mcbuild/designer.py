@@ -7,12 +7,12 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 from . import primitives
 from .blocks import BlockCatalog, check_blocks
 from .materials import MATERIALS
-from .model import Build
+from .model import Build, Pos
 from .server import MAX_Y, MIN_Y
 from .sandbox import API_NAMES, ScriptError, run_script_isolated
 
@@ -137,7 +137,7 @@ def _extract_code(text: str) -> Optional[str]:
     return max(blocks, key=len) if blocks else None
 
 
-def validate(build: Build, catalog: Optional[BlockCatalog], site: Optional["SitePlan"] = None) -> List[str]:
+def validate(build: Build, catalog: Optional[BlockCatalog], box: Optional[Tuple[Pos, Pos]] = None) -> List[str]:
     if not len(build):
         return ["The script didn't place any blocks."]
     problems = []
@@ -146,8 +146,8 @@ def validate(build: Build, catalog: Optional[BlockCatalog], site: Optional["Site
         problems.append(f"The design is {x2 - x1 + 1}x{z2 - z1 + 1} across; the limit is {MAX_FOOTPRINT}x{MAX_FOOTPRINT}.")
     if y2 - y1 + 1 > MAX_HEIGHT:
         problems.append(f"The design is {y2 - y1 + 1} blocks tall; the limit is {MAX_HEIGHT}.")
-    if site:
-        (sx1, sy1, sz1), (sx2, sy2, sz2) = site.box()
+    if box:
+        (sx1, sy1, sz1), (sx2, sy2, sz2) = box
         outside = [p for p, _ in build if not (sx1 <= p[0] <= sx2 and sy1 <= p[1] <= sy2 and sz1 <= p[2] <= sz2)]
         if outside:
             problems.append(f"{len(outside)} blocks are outside the site (e.g. at {sorted(outside)[0]}). Keep x in "
@@ -346,9 +346,40 @@ def design(request: str, client, catalog: Optional[BlockCatalog] = None, model: 
 
     With a site plan, stage="structure" asks for the basic structure (pass 2) and stage="final"
     for the complete design, extending `base_script` when given (pass 3)."""
+    return _design_loop(_stage_request(request, site, stage, base_script), client, catalog,
+                        box=site.box() if site else None, effort="medium" if stage == "structure" else "high",
+                        model=model, log=log, max_attempts=max_attempts, status=status)
+
+
+_EDIT_REQUEST = """This building is already standing in the world. It was designed for: {request}
+
+Its current script:
+```python
+{script}
+```
+
+Change it as follows: {instruction}
+
+Reply with the complete updated script. Keep everything else the same unless the change needs it;
+only the blocks that differ are rebuilt. Keep every block within x {x1}..{x2}, y {y1}..{y2},
+z {z1}..{z2} (the building's site); if the change needs more room, make it fit inside."""
+
+
+def edit_design(instruction: str, request: str, script: str, box: Tuple[Pos, Pos], client,
+                catalog: Optional[BlockCatalog] = None, model: Optional[str] = None, log: Log = print,
+                status: Optional[Status] = None) -> Design:
+    """Have Claude change an existing design script according to `instruction`."""
+    (x1, y1, z1), (x2, y2, z2) = box
+    text = _EDIT_REQUEST.format(request=request, script=script.strip(), instruction=instruction,
+                                x1=x1, y1=y1, z1=z1, x2=x2, y2=y2, z2=z2)
+    return _design_loop(text, client, catalog, box=box, effort="high", model=model, log=log, status=status)
+
+
+def _design_loop(first_message: str, client, catalog: Optional[BlockCatalog], box: Optional[Tuple[Pos, Pos]],
+                 effort: str, model: Optional[str] = None, log: Log = print, max_attempts: int = MAX_ATTEMPTS,
+                 status: Optional[Status] = None) -> Design:
     model = model or os.environ.get("MCBUILD_MODEL", DEFAULT_MODEL)
-    effort = "medium" if stage == "structure" else "high"
-    messages: list = [{"role": "user", "content": _stage_request(request, site, stage, base_script)}]
+    messages: list = [{"role": "user", "content": first_message}]
     problems: List[str] = []
     for attempt in range(1, max_attempts + 1):
         response = _ask_friendly(client, model, messages, effort=effort, status=status)
@@ -365,7 +396,7 @@ def design(request: str, client, catalog: Optional[BlockCatalog] = None, model: 
                 status("checking")
             try:
                 build = run_script_isolated(script)
-                problems = validate(build, catalog, site)
+                problems = validate(build, catalog, box)
             except ScriptError as e:
                 problems = [f"The script failed: {e}"]
             if not problems:

@@ -122,9 +122,10 @@ Useful options:
 | Chat command | What it does |
 |---|---|
 | `!build <description>` | Design something new with AI and build it |
+| `!edit <change>` | Change the last build, e.g. `!edit make the towers taller` or `!edit add a moat` |
 | `!designs` | List your saved designs |
 | `!rebuild <number or name>` | Build a saved design again, with no AI and no cost (e.g. `!rebuild 3`, `!rebuild tower`) |
-| `!undo` | Remove the last build |
+| `!undo` | Revert the last edit, or remove the last build |
 | `!help` | Show the commands |
 
 Each new design costs a little API usage, typically well under $1; bigger builds and fixes cost more.

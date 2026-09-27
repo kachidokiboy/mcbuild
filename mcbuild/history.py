@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import List, Optional
 
 from .model import Pos
@@ -26,6 +26,16 @@ class HistoryEntry:
     blocks: int
     created: str
     backup: Optional[List[int]] = None  # min corner of the backup copy, if one was made
+    # For builds that can be edited: how the design was placed, and each version of it.
+    turns: Optional[int] = None
+    offset: Optional[List[int]] = None
+    site: Optional[List[List[int]]] = None  # the box (design coordinates) edits must stay inside
+    ground: Optional[List[int]] = None  # min corner of the prepared-ground copy
+    designs: List[str] = field(default_factory=list)  # saved design scripts, oldest version first
+
+    @property
+    def editable(self) -> bool:
+        return bool(self.designs and self.turns is not None and self.offset and self.site and self.backup)
 
 
 def backup_origin(build_id: int, pmin: Pos) -> Pos:
