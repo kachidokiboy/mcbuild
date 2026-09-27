@@ -10,8 +10,8 @@ from typing import Callable, List, Tuple
 
 from .model import Build
 from .primitives import (
-    battlements, box, clear, door, gable_roof, hip_roof, line_xz, opening,
-    round_tower, square_tower, stairs_run, torch, wall_line, walls, window,
+    battlements, box, bridge, clear, curtain_wall, door, gable_roof, gatehouse, hip_roof, line_xz, moat,
+    opening, round_tower, spiral_staircase, square_tower, stairs_run, torch, wall_line, walls, window,
 )
 
 
@@ -74,6 +74,22 @@ def stair_platform(b: Build, x: int, z: int) -> None:
     battlements(b, line_xz((x, lz + 3), (x + 3, lz + 3)), top, "stone_bricks")
 
 
+def castle_gate(b: Build, x: int, z: int) -> None:
+    """A gatehouse with a bridge over a moat leading to it."""
+    gatehouse(b, (x + 4, 0, z + 6), width=13, depth=7, height=9, block="stone_bricks")
+    moat(b, (x + 3, z + 6), (x + 17, z + 13), y=0, width=3, depth=2)
+    bridge(b, (x + 9, 0, z + 1), (x + 9, z + 5), width=3, material="stone_brick")
+
+
+def wall_walk(b: Build, x: int, z: int) -> None:
+    """A curtain wall section with a walkway, reached by a spiral staircase in a round tower."""
+    box(b, (x, -1, z), (x + 16, -1, z + 2), "cobblestone")
+    curtain_wall(b, (x, 0, z), (x + 16, z), height=8, block="stone_bricks", thickness=3, outer="north")
+    round_tower(b, (x + 21, 0, z + 1), radius=4, height=11, block="stone_bricks", roof="battlements",
+                door_block="oak_door")
+    spiral_staircase(b, (x + 21, 0, z + 1), height=11, material="stone_brick")
+
+
 SAMPLES: List[Tuple[str, int, Callable[[Build, int, int], None]]] = [
     # (name, width in x, builder)
     ("cottage", 9, cottage),
@@ -82,6 +98,8 @@ SAMPLES: List[Tuple[str, int, Callable[[Build, int, int], None]]] = [
     ("wizard tower", 9, wizard_tower),
     ("gate wall", 13, gate_wall),
     ("stair platform", 4, stair_platform),
+    ("castle gate", 21, castle_gate),
+    ("wall walk", 26, wall_walk),
 ]
 
 

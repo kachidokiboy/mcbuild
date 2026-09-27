@@ -39,7 +39,7 @@ API_NAMES = [
     "box", "clear", "pillar", "walls", "wall_line", "cylinder",
     "gable_roof", "hip_roof", "cone_roof", "battlements",
     "window", "opening", "door", "stairs_run", "lantern", "torch",
-    "square_tower", "round_tower",
+    "square_tower", "round_tower", "gatehouse", "curtain_wall", "spiral_staircase", "bridge", "moat",
     "rect_perimeter", "line_xz", "disc_points", "ring_points",
     "DIRECTIONS", "OPPOSITE",
 ]

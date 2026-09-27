@@ -186,3 +186,69 @@ def test_gallery_samples_fit_and_are_named():
         assert sx2 - sx1 + 1 <= width + 2, name  # declared width, plus roof overhang
     with pytest.raises(ValueError):
         sample("space station")
+
+
+# --- castle parts ---------------------------------------------------------------------------
+
+from mcbuild.primitives import bridge, curtain_wall, gatehouse, moat, spiral_staircase  # noqa: E402
+
+
+def test_curtain_wall_has_walkway_and_battlements_outside():
+    b = Build()
+    curtain_wall(b, (0, 0, 0), (10, 0), height=6, block="stone_bricks", thickness=3, outer="south")
+    assert all((x, 6, z) in b.blocks for x in range(11) for z in (0, 2))  # parapets at y=6
+    assert all((x, 6, 1) not in b.blocks for x in range(11))  # walkway open
+    assert [(x, 7, 2) in b.blocks for x in range(11)] == [x % 2 == 0 for x in range(11)]  # merlons outside
+    assert not any((x, 7, 0) in b.blocks for x in range(11))
+    with pytest.raises(ValueError, match="outer"):
+        curtain_wall(Build(), (0, 0, 0), (10, 0), 6, "stone_bricks", outer="east")
+
+
+def test_gatehouse_passage_goes_through():
+    b = Build()
+    gatehouse(b, (0, 0, 0), width=13, depth=7, height=9, gate_width=3, gate_height=4)
+    for z in range(7):
+        for x in range(5, 8):
+            for y in range(0, 3):
+                assert block_id(b.blocks[(x, y, z)]) == "air", (x, y, z)
+    assert any(block_id(blk) == "iron_bars" for blk in b.blocks.values())
+    tower_top = max(y for (x, y, z) in b.blocks if x == 0)
+    middle_top = max(y for (x, y, z) in b.blocks if x == 6)
+    assert tower_top > middle_top
+    assert sum(block_id(blk).endswith("_door") for blk in b.blocks.values()) == 4  # two doors, two halves
+
+
+def test_spiral_staircase_is_walkable():
+    b = Build()
+    top = spiral_staircase(b, (0, 0, 0), height=8)
+    assert top == 8
+    steps = sorted(((y + (0.5 if "type=top" in blk else 0), (x, z)) for (x, y, z), blk in b
+                    if block_id(blk).endswith("_slab")))
+    assert len(steps) == 16
+    for (h1, c1), (h2, c2) in zip(steps, steps[1:]):
+        assert h2 - h1 == 0.5  # half a block up each step: no jumping
+        assert max(abs(c1[0] - c2[0]), abs(c1[1] - c2[1])) == 1  # to a neighbouring cell
+    # Headroom: the two blocks above each step's surface are free of steps.
+    solid = {p for p, blk in b if block_id(blk) != "air"}
+    for (x, y, z), blk in b:
+        if block_id(blk).endswith("_slab"):
+            assert (x, y + 1, z) not in solid and (x, y + 2, z) not in solid
+    assert (0, 8, 0) in solid and (0, 9, 0) not in solid  # pillar ends at the top
+
+
+def test_bridge_has_deck_rails_and_arch():
+    b = Build()
+    bridge(b, (0, 5, 0), (8, 0), width=3, material="stone_brick")
+    assert all(block_id(b.blocks[(x, 4, z)]) == "stone_bricks" for x in range(9) for z in range(3))
+    assert all(block_id(b.blocks[(x, 5, z)]) == "air" for x in range(9) for z in range(3))
+    assert all(block_id(b.blocks[(x, 5, z)]) == "stone_brick_wall" for x in range(9) for z in (-1, 3))
+    depth = lambda x: min(y for (px, y, pz) in b.blocks if px == x and pz == 1)  # noqa: E731
+    assert depth(0) < depth(4) and depth(8) < depth(4)
+
+
+def test_moat_rings_the_area():
+    b = Build()
+    moat(b, (0, 0), (9, 9), y=0, width=2, depth=2)
+    cells = {(x, z) for (x, y, z) in b.blocks}
+    assert len(cells) == 14 * 14 - 10 * 10
+    assert all(block_id(blk) == "water" and y in (-1, -2) for (x, y, z), blk in b)

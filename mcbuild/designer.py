@@ -122,7 +122,9 @@ Design something that looks good in the game, not a plain box:
 - Matching palettes (2-4 main materials). Light the inside and the entrance.
 - A few simple interior touches (floors, a table, a bed, bookshelves) for houses.
 - For castles: keep, towers, curtain walls with walkways and battlements, a gatehouse; plan the
-  layout first as comments, then build each part with its own helper function and loops.
+  layout first as comments, then build each part with its own helper function and loops. The
+  library has gatehouse(), curtain_wall(), square_tower(), round_tower(), spiral_staircase(),
+  bridge() and moat() for these; combine and decorate them rather than repeating plain boxes.
 - Start each major part of the script with a heading comment like `# == Gatehouse ==`; the
   player sees these headings as progress while you write.
 - Keep it structurally believable: no floating pieces, every roof closed, doors reachable.
