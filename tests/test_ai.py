@@ -70,7 +70,8 @@ def test_sandbox_times_out():
 def test_prompt_examples_run_in_sandbox():
     """The gallery code shown to Claude as examples must work under the same rules."""
     examples = designer._examples()
-    run_script(examples + "\ncottage(b, 0, 0)\nwizard_tower(b, 20, 0)\nstair_platform(b, 40, 0)")
+    run_script(examples + "\ncottage(b, 0, 0)\nwizard_tower(b, 20, 0)\nstair_platform(b, 40, 0)"
+                          "\ncastle_gate(b, 60, 0)\nwall_walk(b, 90, 0)")
 
 
 def test_system_prompt_mentions_every_api_function():

@@ -15,6 +15,7 @@ from __future__ import annotations
 import math
 from typing import List, Optional, Sequence, Tuple
 
+from .materials import material as material_parts
 from .materials import part
 from .model import Build, Pos
 
@@ -379,6 +380,131 @@ def round_tower(b: Build, base_center: Pos, radius: float, height: int, block: s
             battlements(b, ring_points((x, z), radius), top + 2, block)
     else:
         raise ValueError('round_tower roof must be "cone", "battlements" or "flat"')
+
+
+# --- castle parts --------------------------------------------------------------------------
+
+def curtain_wall(b: Build, start: Pos, end: XZ, height: int, block: str, thickness: int = 3,
+                 outer: str = "north") -> List[XZ]:
+    """A thick castle wall from `start` (x, y, z) to `end` (x, z) with a walkway on top,
+    battlements along the `outer` side and a low parapet along the inner side. Extra thickness
+    grows toward +z for east-west walls and toward +x for north-south walls, so `outer` is
+    "north"/"south" for east-west walls and "west"/"east" for north-south ones.
+    Returns the centre-line points."""
+    x0, y0, z0 = start
+    east_west = abs(end[0] - x0) >= abs(end[1] - z0)
+    sides = ("north", "south") if east_west else ("west", "east")
+    if outer not in sides:
+        raise ValueError(f"outer must be {' or '.join(sides)} for this wall")
+    points = wall_line(b, start, end, height, block, thickness)
+    out_offset = 0 if outer == sides[0] else thickness - 1
+    in_offset = thickness - 1 - out_offset
+
+    def row(offset: int) -> List[XZ]:
+        return [(x, z + offset) if east_west else (x + offset, z) for x, z in points]
+
+    top = y0 + height
+    battlements(b, row(out_offset), top, block)
+    if thickness > 1:
+        for x, z in row(in_offset):
+            b.set(x, top, z, block)
+    return points
+
+
+def gatehouse(b: Build, corner: Pos, width: int = 13, depth: int = 7, height: int = 9, block: str = "stone_bricks",
+              gate_width: int = 3, gate_height: int = 4, tower_extra: int = 4) -> None:
+    """A castle gatehouse: two square towers flanking an arched gate passage that runs north-south
+    through the middle, with a half-raised portcullis (iron bars) at the front and battlements on
+    top. `corner` is the north-west base corner; the front faces north."""
+    x, y, z = corner
+    tw = max(3, (width - gate_width - 2) // 2)  # tower width
+    if width < 2 * tw + gate_width + 2:
+        width = 2 * tw + gate_width + 2
+    x2, z2 = x + width - 1, z + depth - 1
+    top = y + height - 1
+    # Towers on both sides, taller than the middle, entered from the passage.
+    square_tower(b, (x, y, z), tw, height + tower_extra, block, door_block=None)
+    square_tower(b, (x2 - tw + 1, y, z), tw, height + tower_extra, block, door_block=None)
+    door(b, (x + tw - 1, y, z + tw // 2), "west", "spruce_door")
+    door(b, (x2 - tw + 1, y, z + tw // 2), "east", "spruce_door")
+    # The middle block with the passage through it.
+    mx1, mx2 = x + tw, x2 - tw
+    box(b, (mx1, y - 1, z), (mx2, y - 1, z2), block)
+    box(b, (mx1, y, z), (mx2, top, z2), block)
+    gx = x + (width - gate_width) // 2
+    opening(b, (gx, y, z), "x", gate_width, gate_height, arched=True, depth=depth)
+    box(b, (gx, y - 1, z), (gx + gate_width - 1, y - 1, z2), "cobblestone")
+    # Portcullis, half raised: bars in the top of the arch, one block inside the front.
+    arch_top = y + gate_height + (gate_width + 1) // 2
+    for bx in range(gx, gx + gate_width):
+        for by in range(y + gate_height - 1, arch_top + 1):
+            if b.blocks.get((bx, by, z + 1)) == "minecraft:air":
+                b.set(bx, by, z + 1, "iron_bars[east=true,west=true]")
+    battlements(b, rect_perimeter((mx1, z), (mx2, z2)), top + 1, block)
+    torch(b, (gx - 1, y + 2, z - 1), wall="north")
+    torch(b, (gx + gate_width, y + 2, z - 1), wall="north")
+
+
+def spiral_staircase(b: Build, base_center: Pos, height: int, material: str = "stone_brick",
+                     pillar_block: Optional[str] = None, clockwise: bool = True) -> int:
+    """Slab steps winding around a central pillar through the 8 cells around it (a 3x3 footprint),
+    rising half a block per step so it can be walked without jumping, with headroom cleared above
+    every step. It climbs `height` blocks; put it in a tower with an inner radius of at least 2.
+    Returns the y you arrive at on top."""
+    x, y, z = base_center
+    slab, full = part(material, "slab"), part(material, "full")
+    ring = [(0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1)]  # clockwise from north
+    if not clockwise:
+        ring = [ring[0]] + ring[:0:-1]
+    steps = []
+    for i in range(2 * height):
+        dx, dz = ring[i % 8]
+        steps.append(((x + dx, y + i // 2, z + dz), "bottom" if i % 2 == 0 else "top"))
+    for (sx, sy, sz), _ in steps:
+        for h in range(1, 4):
+            b.set(sx, sy + h, sz, "air")
+    for (sx, sy, sz), half in steps:
+        b.set(sx, sy, sz, f"{slab}[type={half}]")
+    pillar(b, (x, y, z), height + 1, pillar_block or full)
+    return y + height
+
+
+def bridge(b: Build, start: Pos, end: XZ, width: int = 3, material: str = "stone_brick", arch: bool = True) -> None:
+    """A bridge you walk on at `start`'s y, from `start` (x, y, z) to `end` (x, z). The deck is one
+    block below, with railings on both sides and, with arch=True, an arch underneath that
+    reaches down at both ends. Extra width grows toward +z (east-west) or +x (north-south)."""
+    x0, y0, z0 = start
+    full = part(material, "full")
+    m = material_parts(material)
+    rail = m.get("wall") or m.get("fence") or full
+    points = line_xz((x0, z0), end)
+    east_west = abs(end[0] - x0) >= abs(end[1] - z0)
+    n = len(points)
+    r = (n - 1) / 2
+    for t, (px, pz) in enumerate(points):
+        depth = 1 + (int(round(r - math.sqrt(max(r * r - (t - r) ** 2, 0)))) if arch else 0)
+        for w in range(width):
+            cx, cz = (px, pz + w) if east_west else (px + w, pz)
+            for d in range(1, depth + 1):
+                b.set(cx, y0 - d, cz, full)
+            b.set(cx, y0, cz, "air")
+            b.set(cx, y0 + 1, cz, "air")
+        for w in (-1, width):
+            cx, cz = (px, pz + w) if east_west else (px + w, pz)
+            b.set(cx, y0 - 1, cz, full)
+            b.set(cx, y0, cz, rail)
+
+
+def moat(b: Build, c1: XZ, c2: XZ, y: int = 0, width: int = 3, depth: int = 3) -> None:
+    """A water-filled ring `width` wide around the rectangle c1..c2 (x, z corners), `depth` deep,
+    with its surface one block below `y` (ground level)."""
+    (x1, x2), (z1, z2) = sorted((c1[0], c2[0])), sorted((c1[1], c2[1]))
+    for x in range(x1 - width, x2 + width + 1):
+        for z in range(z1 - width, z2 + width + 1):
+            if x1 <= x <= x2 and z1 <= z <= z2:
+                continue
+            for d in range(1, depth + 1):
+                b.set(x, y - d, z, "water")
 
 
 def _tower_top(b: Build, perimeter: List[XZ], p1: Pos, p2: Pos, block: str, roof: str,

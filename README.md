@@ -79,6 +79,7 @@ using them:
 | Roofs | `gable_roof`, `hip_roof`, `cone_roof`, `battlements` |
 | Details | `window`, `opening` (with arches), `door`, `stairs_run`, `torch`, `lantern` |
 | Components | `square_tower`, `round_tower` |
+| Castle parts | `gatehouse`, `curtain_wall`, `spiral_staircase`, `bridge`, `moat` |
 | Helpers | `rect_perimeter`, `line_xz`, `disc_points`, `ring_points` |
 
 Materials such as `"spruce"`, `"stone_brick"` and `"deepslate_tile"` (`mcbuild/materials.py`) give
@@ -91,9 +92,9 @@ turns them, including every stair, door and pane, so the front faces you.
 1. ✅ **Plumbing:** server setup, RCON, animated placement, undo
 2. ✅ **Building library:** shapes, roofs, battlements, doors, windows, arches, stairs, towers, rotation
 3. ✅ **AI builds from in-game chat:** `!build ...` in Minecraft, with checks and automatic fixes
-4. **Castle scale:** ✅ faster placement with `/fill`, ✅ uneven ground, ✅ `!edit`; next: gatehouses
-   and curtain walls
-5. **Extras:** image-based self-review, style presets, glass-outline preview
+4. ✅ **Castle scale:** faster placement with `/fill`, uneven ground, `!edit`, castle parts (gatehouse,
+   curtain walls, spiral stairs, bridges, moats)
+5. **Extras:** preview and confirm before the detailed design, image-based self-review, style presets
 
 ## Development
 
