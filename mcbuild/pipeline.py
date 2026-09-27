@@ -34,6 +34,7 @@ class PlaceOptions:
     distance: int = 3
     rate: float = 300
     backup: bool = True
+    review: bool = True  # let Claude check pictures of the final design before building it
 
 
 def place_in_front(server: MinecraftServer, design_build: Build, history: History, opts: PlaceOptions,
@@ -283,7 +284,7 @@ def _build_on_site(request, site, placement, area, server, target, bar, client, 
             try:
                 result["design"] = design(request, client, catalog, site=site, stage="final",
                                           base_script=structure.script if structure else None,
-                                          status=bar.note, log=log)
+                                          status=bar.note, log=log, review=opts.review)
             except BaseException as e:  # noqa: BLE001 - re-raised in the main thread
                 result["error"] = e
 
@@ -375,7 +376,7 @@ def edit_last(instruction: str, connect: Connect, client, catalog, history: Hist
             bar.designing("Designing the change")
             try:
                 d = edit_design(instruction, request or entry.name, script, tuple(map(tuple, entry.site)), client,
-                                catalog, log=log, status=bar.note)
+                                catalog, log=log, status=bar.note, review=opts.review)
             except DesignError as e:
                 server.tell(f"Sorry, that didn't work: {e}", target)
                 raise

@@ -152,7 +152,8 @@ def cmd_listen(args) -> None:
 
 
 def _handle_chat(args, player, name, rest, inbox, connect, client, catalog, history) -> None:
-    opts = PlaceOptions(player=player, distance=args.distance, rate=args.rate, backup=not args.no_backup)
+    opts = PlaceOptions(player=player, distance=args.distance, rate=args.rate, backup=not args.no_backup,
+                        review=not args.no_review)
     if name == "build" and rest:
         def confirm(site) -> bool:
             return inbox.wait_for(player, ("go", "cancel"), timeout=args.confirm_timeout) == "go"
@@ -255,6 +256,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-backup", action="store_true", help="Skip undo backups")
     p.add_argument("--no-confirm", action="store_true",
                    help="Don't wait for !go after the site is planned; design and build straight away")
+    p.add_argument("--no-review", action="store_true",
+                   help="Don't have Claude check pictures of each design before building (a little cheaper)")
     p.add_argument("--confirm-timeout", type=float, default=300,
                    help="Seconds to wait for !go before cancelling (default 300)")
     p.set_defaults(func=cmd_listen)

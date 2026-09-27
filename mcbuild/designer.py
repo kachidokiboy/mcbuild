@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import inspect
 import json
 import os
@@ -347,14 +348,17 @@ def _ask_friendly(client, model: str, messages: list, effort: str = "high", stat
 
 def design(request: str, client, catalog: Optional[BlockCatalog] = None, model: Optional[str] = None,
            log: Log = print, max_attempts: int = MAX_ATTEMPTS, site: Optional[SitePlan] = None,
-           stage: str = "final", base_script: Optional[str] = None, status: Optional[Status] = None) -> Design:
+           stage: str = "final", base_script: Optional[str] = None, status: Optional[Status] = None,
+           review: bool = False) -> Design:
     """Have Claude write a design script for `request`, fixing problems until it's valid.
+    review=True has Claude check pictures of the final design before it's accepted.
 
     With a site plan, stage="structure" asks for the basic structure (pass 2) and stage="final"
     for the complete design, extending `base_script` when given (pass 3)."""
     return _design_loop(_stage_request(request, site, stage, base_script), client, catalog,
                         box=site.box() if site else None, effort="medium" if stage == "structure" else "high",
-                        model=model, log=log, max_attempts=max_attempts, status=status)
+                        model=model, log=log, max_attempts=max_attempts, status=status,
+                        review=request if (review and stage != "structure") else None)
 
 
 _EDIT_REQUEST = """This building is already standing in the world. It was designed for: {request}
@@ -373,26 +377,64 @@ z {z1}..{z2} (the building's site); if the change needs more room, make it fit i
 
 def edit_design(instruction: str, request: str, script: str, box: Tuple[Pos, Pos], client,
                 catalog: Optional[BlockCatalog] = None, model: Optional[str] = None, log: Log = print,
-                status: Optional[Status] = None) -> Design:
+                status: Optional[Status] = None, review: bool = False) -> Design:
     """Have Claude change an existing design script according to `instruction`."""
     (x1, y1, z1), (x2, y2, z2) = box
     text = _EDIT_REQUEST.format(request=request, script=script.strip(), instruction=instruction,
                                 x1=x1, y1=y1, z1=z1, x2=x2, y2=y2, z2=z2)
-    return _design_loop(text, client, catalog, box=box, effort="high", model=model, log=log, status=status)
+    return _design_loop(text, client, catalog, box=box, effort="high", model=model, log=log, status=status,
+                        review=f"{request} (changed: {instruction})" if review else None)
+
+
+_REVIEW_REQUEST = """Here are pictures of your design, drawn from your script before building (approximate
+colours; see-through blocks such as doors, panes and fences are drawn as solid cubes). Check it
+against the request: {request}
+
+Look for floating or disconnected pieces, holes in walls or roofs, missing or blocked entrances,
+parts that overlap badly, odd proportions, and anything that doesn't match the request.
+If it looks right, reply with just: LOOKS GOOD
+Otherwise reply with the complete corrected script in one ```python block."""
+
+
+def _review_message(build: Build, request: str) -> Optional[list]:
+    """The review request with the pictures, or None if pictures can't be drawn here."""
+    try:
+        from .render import review_images
+        images = review_images(build)
+    except ImportError:
+        return None
+    content: list = []
+    for caption, png in images:
+        content.append({"type": "text", "text": caption + ":"})
+        content.append({"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                                    "data": base64.b64encode(png).decode()}})
+    content.append({"type": "text", "text": _REVIEW_REQUEST.format(request=request)})
+    return content
 
 
 def _design_loop(first_message: str, client, catalog: Optional[BlockCatalog], box: Optional[Tuple[Pos, Pos]],
                  effort: str, model: Optional[str] = None, log: Log = print, max_attempts: int = MAX_ATTEMPTS,
-                 status: Optional[Status] = None) -> Design:
+                 status: Optional[Status] = None, review: Optional[str] = None) -> Design:
+    """Ask for a script and send problems back until it's valid. With `review` (the request text),
+    a valid design then gets one look at pictures of itself; if the reviewed version can't be made
+    valid, the version before the review is kept."""
     model = model or os.environ.get("MCBUILD_MODEL", DEFAULT_MODEL)
     messages: list = [{"role": "user", "content": first_message}]
     problems: List[str] = []
-    for attempt in range(1, max_attempts + 1):
+    before_review: Optional[Design] = None
+    attempt = 0
+    while attempt < max_attempts:
+        attempt += 1
         response = _ask_friendly(client, model, messages, effort=effort, status=status)
         if response.stop_reason == "refusal":
+            if before_review:
+                return before_review
             raise DesignError("Claude declined to design that; try describing it differently.")
         text = "".join(block.text for block in response.content if block.type == "text")
         script = _extract_code(text)
+        if before_review and script is None:
+            log("Claude checked the pictures: looks good.")
+            return before_review
         if response.stop_reason == "max_tokens":
             problems = ["The reply was cut off. Write a more compact script (use loops and helper functions)."]
         elif script is None:
@@ -406,7 +448,20 @@ def _design_loop(first_message: str, client, catalog: Optional[BlockCatalog], bo
             except ScriptError as e:
                 problems = [f"The script failed: {e}"]
             if not problems:
-                return Design(build, script, attempts=attempt)
+                design_ = Design(build, script, attempts=attempt)
+                pictures = _review_message(build, review) if review and not before_review else None
+                if not pictures:
+                    if before_review:
+                        log("Claude improved the design after checking the pictures.")
+                    return design_
+                before_review = design_
+                if status:
+                    status("reviewing pictures")
+                log("Showing Claude pictures of the design to check...")
+                messages.append({"role": "assistant", "content": response.content})
+                messages.append({"role": "user", "content": pictures})
+                attempt -= 1  # the review round doesn't count against the fix attempts
+                continue
         log(f"Attempt {attempt}: {len(problems)} problem(s) found; asking Claude to fix them...")
         for p in problems[:5]:
             log(f"  - {p}")
@@ -415,4 +470,7 @@ def _design_loop(first_message: str, client, catalog: Optional[BlockCatalog], bo
         messages.append({"role": "assistant", "content": response.content})
         messages.append({"role": "user", "content": "The script had these problems:\n- " + "\n- ".join(problems)
                          + "\nReply with the complete corrected script."})
+    if before_review:
+        log("The reviewed version couldn't be fixed; keeping the design from before the review.")
+        return before_review
     raise DesignError(f"Couldn't get a valid design after {max_attempts} attempts: {problems[0]}")
