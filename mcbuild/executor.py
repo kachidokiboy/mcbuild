@@ -81,6 +81,18 @@ def place_build(
     history.add(entry)
     if prepare:
         prepare()
+    if backup:
+        # Keep a copy of the prepared ground too, so later edits can put removed blocks back.
+        from .staging import ground_copy_origin
+        gmin = ground_copy_origin(tuple(entry.backup))
+        gmax = tuple(gmin[i] + pmax[i] - pmin[i] for i in range(3))
+        server.forceload(gmin, gmax, add=True)
+        try:
+            server.clone(pmin, pmax, gmin)
+        finally:
+            server.forceload(gmin, gmax, add=False)
+        entry.ground = list(gmin)
+        history.save()
 
     total = len(build)
     layers = pmax[1] - pmin[1] + 1

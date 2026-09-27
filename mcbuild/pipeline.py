@@ -11,8 +11,8 @@ from typing import Callable, ContextManager, Iterator, List, Optional, Tuple
 
 from .blocks import check_blocks
 from .config import DESIGNS_DIR
-from .designer import Design, DesignError, design, plan_site
-from .executor import place_build
+from .designer import Design, DesignError, design, edit_design, plan_site
+from .executor import place_build, undo_last
 from .history import History, HistoryEntry
 from .model import Build, Pos
 from .placement import offset_in_front, turns_to_face, yaw_to_direction
@@ -37,7 +37,7 @@ class PlaceOptions:
 
 
 def place_in_front(server: MinecraftServer, design_build: Build, history: History, opts: PlaceOptions,
-                   log: Log = print) -> HistoryEntry:
+                   log: Log = print, design_path: Optional[str] = None) -> HistoryEntry:
     """Place a north-fronted design in front of the player (or at opts.at), front facing them,
     on leveled ground."""
     placement = placement_for(server, *design_build.bounds(), opts, log)
@@ -55,8 +55,12 @@ def place_in_front(server: MinecraftServer, design_build: Build, history: Histor
             depth = max(0, min(ground - by1, ground - lowest + 1, terrain.MAX_FILL_DEPTH))
             top = max(by2, ground)
             prepare = lambda: terrain.level(server, x1, z1, x2, z2, ground, top, depth, log)  # noqa: E731
-        return place_build(server, build, history, rate=opts.rate, backup=opts.backup, progress=log,
-                           prepare=prepare)
+        entry = place_build(server, build, history, rate=opts.rate, backup=opts.backup, progress=log,
+                            prepare=prepare)
+        if design_path:
+            _remember_placement(history, entry, placement, design_build.bounds(), design_path,
+                                tuple(entry.ground) if entry.ground else None)
+        return entry
     finally:
         server.forceload((x1, 0, z1), (x2, 0, z2), add=False)
 
@@ -288,11 +292,105 @@ def _build_on_site(request, site, placement, area, server, target, bar, client, 
         builder.finish(final.build.name if final and final.build.name != "design" else site.name)
 
     path = save_design(request, final)
+    _remember_placement(history, entry, placement, site.box(), path, builder.ground_min)
     number = int(os.path.basename(path).split("-", 1)[0])
     log(f"Design '{entry.name}' ({len(final.build)} blocks) saved to {path}")
     server.tell(f"Finished {entry.name}! Saved as design #{number}: !rebuild {number} builds it again for free, "
                 "!undo removes it.", target)
     return entry
+
+
+def _remember_placement(history: History, entry: HistoryEntry, placement: Placement, box, design_path: str,
+                        ground_min: Optional[Pos]) -> None:
+    """Store what's needed to edit this build later."""
+    entry.turns = placement.turns
+    entry.offset = list(placement.offset)
+    entry.site = [list(box[0]), list(box[1])]
+    entry.ground = list(ground_min) if ground_min else entry.ground
+    entry.designs = [design_path]
+    history.save()
+
+
+# --- editing -------------------------------------------------------------------------------
+
+def read_design(path: str) -> Tuple[str, str]:
+    """(request, script) of a saved design file."""
+    with open(path) as f:
+        text = f.read()
+    first, _, rest = text.partition("\n")
+    if first.startswith("# Request: "):
+        return first[len("# Request: "):].strip(), rest
+    return "", text
+
+
+def _placed(entry: HistoryEntry, design_build: Build) -> Build:
+    """A design as placed in the world for this build, clipped to the build's area."""
+    placed = Placement(entry.turns, tuple(entry.offset)).apply(design_build)
+    clipped = Build(placed.name)
+    clipped.blocks = {p: b for p, b in placed.blocks.items()
+                      if all(entry.min[i] <= p[i] <= entry.max[i] for i in range(3))}
+    return clipped
+
+
+def _editable_entry(history: History) -> HistoryEntry:
+    entry = history.last()
+    if entry is None:
+        raise ValueError("There's nothing to edit yet; make something with !build")
+    if not entry.editable or not os.path.exists(entry.designs[-1]):
+        raise ValueError(f"'{entry.name}' can't be edited (only builds made with this version of mcbuild, "
+                         "with undo backups, can be)")
+    return entry
+
+
+def edit_last(instruction: str, connect: Connect, client, catalog, history: History, opts: PlaceOptions,
+              log: Log = print) -> HistoryEntry:
+    """Change the most recent build as described, rebuilding only what differs."""
+    entry = _editable_entry(history)
+    request, script = read_design(entry.designs[-1])
+    with _server(connect) as server:
+        target = opts.player or "@a"
+        server.tell(f"Editing {entry.name}: \"{instruction}\"...", target)
+        with ProgressBar(server, target, log) as bar:
+            bar.designing("Designing the change")
+            try:
+                d = edit_design(instruction, request or entry.name, script, tuple(map(tuple, entry.site)), client,
+                                catalog, log=log, status=bar.note)
+            except DesignError as e:
+                server.tell(f"Sorry, that didn't work: {e}", target)
+                raise
+            finally:
+                bar.designed()
+            current = _placed(entry, run_script_isolated(script))
+            builder = SiteBuilder.resume(server, history, entry, current, rate=opts.rate, log=log)
+            try:
+                bar.building("Applying the change")
+                builder.apply(_placed(entry, d.build), bar.built)
+                bar.done_building()
+            finally:
+                builder.finish(d.build.name if d.build.name != "design" else entry.name)
+        path = save_design(f"{request} | edit: {instruction}", d)
+        entry.designs.append(path)
+        history.save()
+        number = int(os.path.basename(path).split("-", 1)[0])
+        server.tell(f"Updated {entry.name}; saved as design #{number}. !undo reverts this edit.", target)
+    return entry
+
+
+def undo(server: MinecraftServer, history: History, log: Log = print) -> str:
+    """Revert the last edit if the last build was edited, else remove the last build."""
+    entry = history.last()
+    if entry is not None and entry.editable and len(entry.designs) > 1 and all(map(os.path.exists, entry.designs[-2:])):
+        current = _placed(entry, run_script_isolated(read_design(entry.designs[-1])[1]))
+        previous = _placed(entry, run_script_isolated(read_design(entry.designs[-2])[1]))
+        builder = SiteBuilder.resume(server, history, entry, current, rate=0, log=log)
+        try:
+            builder.apply(previous)
+        finally:
+            entry.designs.pop()
+            builder.finish(previous.name if previous.name != "design" else entry.name)
+        return f"Reverted the last edit of {entry.name}"
+    entry = undo_last(server, history, progress=log)
+    return f"Removed {entry.name}"
 
 
 def _box_build(box_min: Pos, box_max: Pos) -> Build:

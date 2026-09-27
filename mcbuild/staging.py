@@ -20,6 +20,10 @@ from .server import MAX_Y, MIN_Y, MinecraftServer
 # The prepared-ground copy sits next to the undo backup, in the same far-away strip.
 GROUND_COPY_OFFSET = 512
 
+def ground_copy_origin(backup_min: Pos) -> Pos:
+    return (backup_min[0], backup_min[1], backup_min[2] + GROUND_COPY_OFFSET)
+
+
 # Rebuild from scratch when a pass would change more than this share of the blocks.
 REBUILD_FRACTION = 0.5
 
@@ -62,9 +66,32 @@ class SiteBuilder:
         # A second copy taken after the ground is prepared: passes restore removed blocks from it,
         # while undo still restores the original terrain from the first.
         self._ground_min: Optional[Pos] = None
+        self._site_loaded = False
         self.errors = 0
 
     # --- lifecycle -----------------------------------------------------------------------------
+
+    @classmethod
+    def resume(cls, server: MinecraftServer, history: History, entry: HistoryEntry, current: Build,
+               rate: float = 300, log: Callable[[str], None] = print) -> "SiteBuilder":
+        """Continue working on an earlier build (for edits): `current` is what's standing there now."""
+        builder = cls(server, history, tuple(entry.min), tuple(entry.max), entry.name, rate=rate,
+                      backup=bool(entry.backup), log=log)
+        builder.entry = entry
+        builder.current = dict(current.blocks)
+        if entry.backup:
+            builder._backup_min = tuple(entry.backup)
+            server.forceload(builder._backup_min, builder._to_backup(builder.site_max), add=True)
+        if entry.ground:
+            builder._ground_min = tuple(entry.ground)
+            server.forceload(builder._ground_min, builder._to_copy(builder._ground_min, builder.site_max), add=True)
+        server.forceload(builder.site_min, builder.site_max, add=True)
+        builder._site_loaded = True
+        return builder
+
+    @property
+    def ground_min(self) -> Optional[Pos]:
+        return self._ground_min
 
     def start(self) -> HistoryEntry:
         """Back up the whole site (for removals between passes, and for undo) and record it."""
@@ -86,7 +113,7 @@ class SiteBuilder:
         """Remember the site as it is now (after leveling) as the ground that removed blocks go back to."""
         if not self._backup_min:
             return
-        self._ground_min = (self._backup_min[0], self._backup_min[1], self._backup_min[2] + GROUND_COPY_OFFSET)
+        self._ground_min = ground_copy_origin(self._backup_min)
         self.server.forceload(self._ground_min, self._to_copy(self._ground_min, self.site_max), add=True)
         self.server.clone(self.site_min, self.site_max, self._ground_min)
 
@@ -98,6 +125,8 @@ class SiteBuilder:
         for copy_min in (self._backup_min, self._ground_min):
             if copy_min:
                 self.server.forceload(copy_min, self._to_copy(copy_min, self.site_max), add=False)
+        if self._site_loaded:
+            self.server.forceload(self.site_min, self.site_max, add=False)
 
     # --- passes --------------------------------------------------------------------------------
 

@@ -554,3 +554,96 @@ def test_rebuild_on_a_hill_levels_the_ground(tmp_path):
     assert not game.forceloaded and not game.entities
     undo_last(server, history, progress=lambda m: None)
     assert all(game.block(p) == b for p, b in original.items())
+
+
+# --- editing --------------------------------------------------------------------------------
+
+EDITED = STRUCTURE + """
+# == Bell tower ==
+box(b, (0, 6, 0), (3, 12, 3), "stone_bricks")
+"""
+
+
+def test_edit_changes_only_differences_and_undo_steps_back(tmp_path, monkeypatch):
+    from mcbuild.pipeline import edit_last, undo
+    from mcbuild.server import MinecraftServer
+    monkeypatch.chdir(tmp_path)
+    game = FakeMinecraft(players={"Chris": ((0.5, 64.0, 0.5), (0.0, 0.0))})
+    original = dict(game.world)
+    srv = FakeRconServer(game, password="pw")
+
+    def connect():
+        client = RconClient("127.0.0.1", srv.port, "pw")
+        client.connect()
+        return client
+
+    history = History("h.json")
+    panes = lambda: [p for p, b in game.world.items() if "glass_pane" in b]  # noqa: E731
+    try:
+        ai_build("a big hall", connect, FakeClaude([_site("Big Hall", 30, 22, 7), code(STRUCTURE), code(DETAIL)]),
+                 CATALOG, history, PlaceOptions(player="Chris", rate=0), log=lambda m: None)
+        after_build = dict(game.world)
+        assert len(panes()) == 6
+
+        claude = FakeClaude([code(EDITED)])
+        game.log.clear()
+        entry = edit_last("add a bell tower and close the doorway", connect, claude, CATALOG, history,
+                          PlaceOptions(player="Chris", rate=0), log=lambda m: None)
+        ask = claude.requests[0]["messages"][0]["content"]
+        assert "add a bell tower" in ask and "window(b" in ask and "a big hall" in ask and "Keep every block within" in ask
+        assert not panes()  # windows gone, wall closed again
+        tower = [p for p, b in game.world.items() if b == "minecraft:stone_bricks" and p[1] >= 70]
+        assert len(tower) == 4 * 4 * 7  # the new bell tower, above the old walls
+        assert len([c for c in game.log if c.startswith(("setblock", "fill"))]) < 150  # only the differences
+        assert len(entry.designs) == 2 and History("h.json").last().designs == entry.designs
+
+        assert undo(MinecraftServer(game), history, log=lambda m: None).startswith("Reverted the last edit")
+        assert len(panes()) == 6
+        assert all(game.block(p) == b for p, b in after_build.items())
+        assert undo(MinecraftServer(game), history, log=lambda m: None).startswith("Removed")
+        assert all(game.block(p) == b for p, b in original.items())
+        assert not game.forceloaded
+    finally:
+        srv.close()
+
+
+def test_edit_a_rebuilt_design(tmp_path, monkeypatch):
+    from mcbuild.designer import Design
+    from mcbuild.pipeline import edit_last, load_design, place_in_front, save_design
+    from mcbuild.server import MinecraftServer
+    monkeypatch.chdir(tmp_path)
+    path = save_design("a tiny tower", Design(run_script(GOOD_SCRIPT), GOOD_SCRIPT, 1))
+    game = FakeMinecraft(players={"Chris": ((0.5, 64.0, 0.5), (0.0, 0.0))})
+    srv = FakeRconServer(game, password="pw")
+
+    def connect():
+        client = RconClient("127.0.0.1", srv.port, "pw")
+        client.connect()
+        return client
+
+    history = History("h.json")
+    try:
+        place_in_front(MinecraftServer(game), load_design(path, CATALOG), history,
+                       PlaceOptions(player="Chris", rate=0), log=lambda m: None, design_path=path)
+        taller = GOOD_SCRIPT.replace("height=6", "height=4")
+        edit_last("make it shorter", connect, FakeClaude([code(taller)]), CATALOG, history,
+                  PlaceOptions(player="Chris", rate=0), log=lambda m: None)
+    finally:
+        srv.close()
+    top = max(p[1] for p, b in game.world.items() if b == "minecraft:stone_bricks")
+    assert top < 64 + 7
+
+
+def test_edit_needs_an_editable_build(tmp_path):
+    from mcbuild.executor import place_build
+    from mcbuild.model import Build
+    from mcbuild.pipeline import edit_last
+    from mcbuild.server import MinecraftServer
+    history = History(str(tmp_path / "h.json"))
+    with pytest.raises(ValueError, match="nothing to edit"):
+        edit_last("x", None, None, None, history, PlaceOptions())
+    b = Build("old")
+    b.set(0, 64, 0, "stone")
+    place_build(MinecraftServer(FakeMinecraft()), b, history, rate=0, progress=lambda m: None)
+    with pytest.raises(ValueError, match="can't be edited"):
+        edit_last("x", None, None, None, history, PlaceOptions())

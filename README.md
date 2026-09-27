@@ -59,7 +59,10 @@ prompt ──► Claude writes a build script ──► run it ──► voxel m
 - **Progress bar:** a bar at the top of the screen shows what's happening: planning, which part
   Claude is writing, build percentage, and fixes.
 - **Chat commands:** `mcbuild listen` watches the server log for `!build <description>`,
-  `!designs`, `!rebuild <number or name>`, `!undo` and `!help`, and replies in chat.
+  `!edit <change>`, `!designs`, `!rebuild <number or name>`, `!undo` and `!help`, and replies in chat.
+- **Editing:** `!edit make the towers taller` gives Claude the last build's script and the change;
+  only the blocks that differ are rebuilt, inside the same site. Each version is saved, and
+  `!undo` right after an edit reverts just that edit.
 - **Saved designs:** every design is saved automatically as a numbered script in
   `.mcbuild/designs/`. `!rebuild 3` (or `mcbuild script 3`) builds it again with no AI and no API
   cost. `mcbuild designs` lists them. The model defaults to Claude Opus 5.5 (`MCBUILD_MODEL`
@@ -88,8 +91,8 @@ turns them, including every stair, door and pane, so the front faces you.
 1. ✅ **Plumbing:** server setup, RCON, animated placement, undo
 2. ✅ **Building library:** shapes, roofs, battlements, doors, windows, arches, stairs, towers, rotation
 3. ✅ **AI builds from in-game chat:** `!build ...` in Minecraft, with checks and automatic fixes
-4. **Castle scale:** ✅ faster placement with `/fill`, ✅ uneven ground; next: `!edit`, gatehouses and
-   curtain walls
+4. **Castle scale:** ✅ faster placement with `/fill`, ✅ uneven ground, ✅ `!edit`; next: gatehouses
+   and curtain walls
 5. **Extras:** image-based self-review, style presets, glass-outline preview
 
 ## Development
