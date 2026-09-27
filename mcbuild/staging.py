@@ -8,16 +8,14 @@ to restore the whole site and build it fresh.
 
 from __future__ import annotations
 
-import time
 from datetime import datetime, timezone
 from itertools import groupby
 from typing import Callable, Dict, List, Optional, Tuple
 
-from .executor import BuildAborted
 from .history import MAX_FOOTPRINT, History, HistoryEntry, backup_origin
 from .model import Build, Pos
-from .sequence import build_order
-from .server import MAX_Y, MIN_Y, CommandError, MinecraftServer
+from . import placer
+from .server import MAX_Y, MIN_Y, MinecraftServer
 
 # Rebuild from scratch when a pass would change more than this share of the blocks.
 REBUILD_FRACTION = 0.5
@@ -119,24 +117,8 @@ class SiteBuilder:
     def _place(self, items: List[Tuple[Pos, str]], progress: Optional[Progress]) -> None:
         batch = Build()
         batch.blocks = dict(items)
-        order = build_order(batch)
-        total = len(order)
-        interval = 1.0 / self.rate if self.rate > 0 else 0.0
-        start = time.monotonic()
-        for i, (pos, block) in enumerate(order):
-            try:
-                self.server.setblock(pos, block)
-            except CommandError as e:
-                self.errors += 1
-                self.log(f"  ! {e}")
-                if self.errors >= self.max_errors:
-                    raise BuildAborted(f"Too many failed blocks ({self.errors}); stopping. !undo reverts it.")
-            if progress and (i % 25 == 0 or i == total - 1):
-                progress((i + 1) * 100 // total)
-            if interval:
-                delay = start + (i + 1) * interval - time.monotonic()
-                if delay > 0:
-                    time.sleep(delay)
+        self.errors += placer.place(self.server, batch, rate=self.rate, progress=progress, log=self.log,
+                                    max_errors=self.max_errors - self.errors)
 
     # --- helpers -------------------------------------------------------------------------------
 

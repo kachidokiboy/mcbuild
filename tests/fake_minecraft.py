@@ -66,6 +66,22 @@ class FakeMinecraft:
                 return "Could not set the block"
             self.world[(x, y, z)] = block
             return f"Changed the block at {x}, {y}, {z}"
+        if name == "fill":
+            x1, y1, z1, x2, y2, z2 = map(int, parts[1:7])
+            block = parts[7]
+            volume = (abs(x2 - x1) + 1) * (abs(y2 - y1) + 1) * (abs(z2 - z1) + 1)
+            if volume > 32768:
+                return f"Too many blocks in the specified area (maximum 32768, specified {volume})"
+            if "bogus" in block:
+                return f"Unknown block type '{block}'...<--[HERE]"
+            changed = 0
+            for x in range(min(x1, x2), max(x1, x2) + 1):
+                for y in range(min(y1, y2), max(y1, y2) + 1):
+                    for z in range(min(z1, z2), max(z1, z2) + 1):
+                        if self.block((x, y, z)) != block:
+                            self.world[(x, y, z)] = block
+                            changed += 1
+            return f"Successfully filled {changed} block(s)" if changed else "No blocks were filled"
         if name == "forceload":
             action = parts[1]
             x1, z1, x2, z2 = map(int, parts[2:6])
